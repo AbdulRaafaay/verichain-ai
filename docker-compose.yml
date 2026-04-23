@@ -18,15 +18,15 @@ services:
   gateway:
     build: ./packages/gateway
     environment:
-      - NODE_ENV=production
-      - GATEWAY_PORT=8443
-      - MONGODB_URI=mongodb://mongodb:27017/verichain
-      - REDIS_URL=redis://redis:6379
-      - BLOCKCHAIN_RPC=http://blockchain:8545
+      - NODE_ENV=${ENVIRONMENT}
+      - GATEWAY_PORT=${GATEWAY_PORT}
+      - MONGODB_URI=${MONGODB_URI}
+      - REDIS_URL=${REDIS_URL}
+      - BLOCKCHAIN_RPC=${BLOCKCHAIN_RPC}
       - ACCESS_POLICY_ADDRESS=${ACCESS_POLICY_ADDRESS}
       - AUDIT_LEDGER_ADDRESS=${AUDIT_LEDGER_ADDRESS}
       - GATEWAY_PRIVATE_KEY=${GATEWAY_PRIVATE_KEY}
-      - AI_ENGINE_URL=http://ai-engine:5001
+      - AI_ENGINE_URL=${AI_ENGINE_URL}
       - AI_HMAC_SECRET=${AI_HMAC_SECRET}
     volumes:
       - ./certs:/app/certs:ro
@@ -47,7 +47,7 @@ services:
     build: ./packages/ai-engine
     environment:
       - AI_HMAC_SECRET=${AI_HMAC_SECRET}
-      - BLOCKCHAIN_RPC=http://blockchain:8545
+      - BLOCKCHAIN_RPC=${BLOCKCHAIN_RPC}
       - ACCESS_POLICY_ADDRESS=${ACCESS_POLICY_ADDRESS}
     networks:
       - internal_net
@@ -70,6 +70,9 @@ services:
 
   mongodb:
     image: mongo:7.0
+    environment:
+      - MONGO_INITDB_ROOT_USERNAME=${MONGO_ROOT_USER}
+      - MONGO_INITDB_ROOT_PASSWORD=${MONGO_ROOT_PASSWORD}
     networks:
       - internal_net
     volumes:
@@ -82,12 +85,13 @@ services:
 
   redis:
     image: redis:7.2-alpine
+    command: ["redis-server", "--requirepass", "${REDIS_PASSWORD}"]
     networks:
       - internal_net
     volumes:
       - redis_data:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -95,7 +99,7 @@ services:
   trust-dashboard:
     build: ./packages/trust-dashboard
     environment:
-      - REACT_APP_GATEWAY_URL=https://localhost:8443
+      - REACT_APP_GATEWAY_URL=${REACT_APP_GATEWAY_URL}
     networks:
       - public_net
     ports:
