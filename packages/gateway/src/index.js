@@ -80,9 +80,9 @@ async function startServer() {
 
     // mTLS server options
     const tlsOptions = {
-        key: fs.readFileSync(path.join(__dirname, '../../../../certs/gateway.key')),
-        cert: fs.readFileSync(path.join(__dirname, '../../../../certs/gateway.crt')),
-        ca: fs.readFileSync(path.join(__dirname, '../../../../certs/ca.crt')),
+        key: fs.readFileSync('/app/certs/gateway.key'),
+        cert: fs.readFileSync('/app/certs/gateway.crt'),
+        ca: fs.readFileSync('/app/certs/ca.crt'),
         requestCert: true,
         rejectUnauthorized: true,
     };
