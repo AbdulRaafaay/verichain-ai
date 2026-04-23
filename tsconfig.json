@@ -13,12 +13,12 @@
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
-    "forceConsistentCasingInFileNames": true
+    "forceConsistentCasingInFileNames": true,
+    "typeRoots": ["./node_modules/@types"],
+    "types": ["node"]
   },
   "include": [
-    "packages/gateway/src/**/*",
-    "packages/trust-dashboard/src/**/*",
-    "packages/desktop-agent/src/**/*"
+    "src/**/*"
   ],
-  "exclude": ["node_modules", "**/dist/*"]
+  "exclude": ["node_modules", "**/dist/*", "packages/**/*"]
 }
