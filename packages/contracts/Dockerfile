@@ -4,11 +4,14 @@ WORKDIR /app
 
 COPY package*.json ./
 RUN npm install
+RUN apk add --no-cache netcat-openbsd
 
 COPY . .
 
 # Expose Hardhat node port
 EXPOSE 8545
 
-# Start local hardhat node by default
-CMD ["npx", "hardhat", "node", "--hostname", "0.0.0.0"]
+# Use entrypoint script for auto-deployment
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+ENTRYPOINT ["/entrypoint.sh"]

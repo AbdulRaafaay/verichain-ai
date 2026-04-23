@@ -3,11 +3,12 @@ FROM node:20-alpine
 WORKDIR /app
 
 COPY package*.json ./
-RUN npm install
+RUN rm -rf node_modules && npm install
 
-COPY . .
+COPY src/ ./src/
+COPY tsconfig.json ./
 
 # mTLS certs are mounted via volume in docker-compose
 EXPOSE 8443
 
-CMD ["node", "src/index.js"]
+CMD ["npm", "run", "dev"]

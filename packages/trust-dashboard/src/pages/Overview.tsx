@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { io } from 'socket.io-client';
+import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 
 interface Stats {
     activeSessions: number;
@@ -17,15 +18,19 @@ const Overview: React.FC = () => {
     });
     const [recentAlerts, setRecentAlerts] = useState<any[]>([]);
     const [blockchainStatus, setBlockchainStatus] = useState<any>(null);
+    const [riskData, setRiskData] = useState<any[]>([]);
 
     useEffect(() => {
         const socket = io(process.env.REACT_APP_GATEWAY_URL || 'https://localhost:8443', {
             withCredentials: true
         });
 
-        socket.on('stats_update', (newStats) => setStats(newStats));
+        socket.on('stats_update', (newStats: Stats) => setStats(newStats));
         socket.on('tamper_alert', (alert: any) => setRecentAlerts((prev: any[]) => [alert, ...prev].slice(0, 5)));
-        socket.on('merkle_status', (status) => setBlockchainStatus(status));
+        socket.on('merkle_status', (status: any) => setBlockchainStatus(status));
+        socket.on('stats_update', (newStats: Stats) => {
+            setRiskData((prev: any[]) => [...prev, { time: new Date().toLocaleTimeString(), score: newStats.avgRiskScore }].slice(-20));
+        });
 
         return () => { socket.disconnect(); };
     }, []);
@@ -54,6 +59,19 @@ const Overview: React.FC = () => {
             </div>
 
             <section style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: '2rem' }}>
+                <div className="risk-trend card" style={{ height: '300px', padding: '1rem' }}>
+                    <h2>Risk Score Trend</h2>
+                    <ResponsiveContainer width="100%" height="100%">
+                        <LineChart data={riskData}>
+                            <CartesianGrid strokeDasharray="3 3" stroke="#1e3060" />
+                            <XAxis dataKey="time" stroke="#8fa3c8" fontSize={12} />
+                            <YAxis stroke="#8fa3c8" fontSize={12} domain={[0, 100]} />
+                            <Tooltip contentStyle={{ backgroundColor: '#111d35', border: '1px solid #1e3060' }} />
+                            <Line type="monotone" dataKey="score" stroke="#3b82f6" strokeWidth={2} dot={false} />
+                        </LineChart>
+                    </ResponsiveContainer>
+                </div>
+                
                 <div className="blockchain-status">
                     <h2>Blockchain Status</h2>
                     {blockchainStatus ? (

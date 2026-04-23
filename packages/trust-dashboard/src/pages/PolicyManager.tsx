@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 
 const PolicyManager: React.FC = () => {
@@ -6,6 +6,19 @@ const PolicyManager: React.FC = () => {
     const [resourceHash, setResourceHash] = useState('');
     const [action, setAction] = useState('GRANT');
     const [pendingChanges, setPendingChanges] = useState<any[]>([]);
+
+    useEffect(() => {
+        const fetchChanges = async () => {
+            try {
+                const gatewayUrl = process.env.REACT_APP_GATEWAY_URL || 'https://localhost:8443';
+                const response = await axios.get(`${gatewayUrl}/admin/pending-policies`, { withCredentials: true });
+                setPendingChanges(response.data);
+            } catch (err: any) {
+                console.error('Failed to fetch changes', err);
+            }
+        };
+        fetchChanges();
+    }, []);
 
     const proposeChange = async () => {
         try {
@@ -18,8 +31,18 @@ const PolicyManager: React.FC = () => {
             
             setPendingChanges(prev => [...prev, response.data]);
             alert('Policy change proposed successfully!');
-        } catch (err) {
+        } catch (err: any) {
             console.error('Failed to propose policy change', err);
+        }
+    };
+
+    const approveChange = async (change: any) => {
+        try {
+            const gatewayUrl = process.env.REACT_APP_GATEWAY_URL || 'https://localhost:8443';
+            await axios.post(`${gatewayUrl}/api/admin/approve`, { changeHash: change.hash }, { withCredentials: true });
+            setPendingChanges((prev: any[]) => prev.filter((c: any) => c.hash !== change.hash));
+        } catch (err: any) {
+            console.error('Approval failed', err);
         }
     };
 
@@ -50,11 +73,11 @@ const PolicyManager: React.FC = () => {
                 <h2>Pending Approvals (Threshold: 2/3)</h2>
                 {pendingChanges.length === 0 ? <p>No pending policy changes.</p> : (
                     <ul>
-                        {pendingChanges.map((change, i) => (
+                        {pendingChanges.map((change: any, i: number) => (
                             <li key={i}>
                                 Propose: {change.action} for {change.userHash.substring(0, 8)}... 
                                 | Approvals: {change.approvals}/3
-                                <button style={{ marginLeft: '1rem' }}>Sign & Approve</button>
+                                <button style={{ marginLeft: '1rem' }} onClick={() => approveChange(change)}>Sign & Approve</button>
                             </li>
                         ))}
                     </ul>

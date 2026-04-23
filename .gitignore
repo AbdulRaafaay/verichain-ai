@@ -58,3 +58,8 @@ Thumbs.db
 # Documentation (Requested to be excluded from push)
 implementation_plan.md
 prompt.md
+
+# Build Artifacts
+**/dist/
+**/build/
+**/out/

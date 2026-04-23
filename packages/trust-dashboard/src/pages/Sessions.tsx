@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import axios from 'axios';
+import { io } from 'socket.io-client';
 
 interface Session {
     id: string;
@@ -14,26 +15,35 @@ const Sessions: React.FC = () => {
     const [sessions, setSessions] = useState<Session[]>([]);
 
     useEffect(() => {
+        const gatewayUrl = process.env.REACT_APP_GATEWAY_URL || 'https://localhost:8443';
+        const socket = io(gatewayUrl, { withCredentials: true });
+
         const fetchSessions = async () => {
             try {
-                const gatewayUrl = process.env.REACT_APP_GATEWAY_URL || 'https://localhost:8443';
-                const response = await axios.get(`${gatewayUrl}/admin/sessions`, { withCredentials: true });
-                setSessions(response.data);
+                const response = await axios.get(`${gatewayUrl}/api/admin/overview`, { withCredentials: true });
+                setSessions(response.data.sessions || []);
             } catch (err) {
                 console.error('Failed to fetch sessions', err);
             }
         };
 
         fetchSessions();
-        const interval = setInterval(fetchSessions, 10000); // Polling for session updates
-        return () => clearInterval(interval);
+
+        socket.on('session_update', (updatedSessions: Session[]) => {
+            setSessions(updatedSessions);
+        });
+
+        socket.on('session_revoked', ({ sessionId }: { sessionId: string }) => {
+            setSessions((prev: any[]) => prev.map((s: any) => s.id === sessionId ? { ...s, status: 'REVOKED' } : s));
+        });
+
+        return () => { socket.disconnect(); };
     }, []);
 
     const revokeSession = async (id: string) => {
         try {
             const gatewayUrl = process.env.REACT_APP_GATEWAY_URL || 'https://localhost:8443';
-            await axios.post(`${gatewayUrl}/admin/revoke-session`, { sessionId: id }, { withCredentials: true });
-            setSessions((prev: Session[]) => prev.map((s: Session) => s.id === id ? { ...s, status: 'REVOKED' } : s));
+            await axios.post(`${gatewayUrl}/api/admin/revoke`, { sessionId: id }, { withCredentials: true });
         } catch (err) {
             console.error('Failed to revoke session', err);
         }
@@ -53,7 +63,7 @@ const Sessions: React.FC = () => {
                     </tr>
                 </thead>
                 <tbody>
-                    {sessions.map((s: Session) => (
+                    {sessions.map((s: any) => (
                         <tr key={s.id}>
                             <td>{s.id.substring(0, 8)}...</td>
                             <td>{s.userHash.substring(0, 8)}...</td>

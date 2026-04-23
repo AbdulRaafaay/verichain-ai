@@ -21,6 +21,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
 COPY . .
+COPY model.pkl /app/model.pkl
 
 # Set ownership to non-root user
 RUN chown -R verichain:verichain /app

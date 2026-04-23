@@ -1,0 +1,24 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "baseUrl": ".",
+    "jsx": "react-jsx",
+    "paths": {
+      "@verichain/gateway/*": ["packages/gateway/src/*"],
+      "@verichain/trust-dashboard/*": ["packages/trust-dashboard/src/*"],
+      "@verichain/contracts/*": ["packages/contracts/*"]
+    },
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true
+  },
+  "include": [
+    "packages/gateway/src/**/*",
+    "packages/trust-dashboard/src/**/*",
+    "packages/desktop-agent/src/**/*"
+  ],
+  "exclude": ["node_modules", "**/dist/*"]
+}

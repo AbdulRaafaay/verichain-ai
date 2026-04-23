@@ -15,6 +15,18 @@ volumes:
   redis_data:
 
 services:
+  setup:
+    image: alpine:latest
+    volumes:
+      - ./certs:/certs
+      - ./scripts/docker-setup-certs.sh:/setup.sh
+    command: ["/bin/sh", "/setup.sh"]
+    entrypoint: []
+    user: root
+    networks:
+      - internal_net
+      - public_net
+
   nginx:
     image: nginx:alpine
     ports:
@@ -28,6 +40,7 @@ services:
     depends_on:
       - gateway
       - trust-dashboard
+      - setup
     restart: unless-stopped
 
   gateway:
@@ -47,6 +60,9 @@ services:
       - JWT_SECRET=${JWT_SECRET}
       - DESKTOP_AGENT_ORIGIN=${DESKTOP_AGENT_ORIGIN}
       - TRUST_DASHBOARD_ORIGIN=${TRUST_DASHBOARD_ORIGIN}
+      - GATEWAY_KEY_PATH=/app/certs/gateway.key
+      - GATEWAY_CERT_PATH=/app/certs/gateway.crt
+      - CA_CERT_PATH=/app/certs/ca.crt
     volumes:
       - ./certs:/app/certs:ro
     networks:
@@ -56,6 +72,7 @@ services:
       - mongodb
       - redis
       - blockchain
+      - setup
     healthcheck:
       test: ["CMD", "curl", "-kf", "https://localhost:8443/health"]
       interval: 30s
@@ -78,11 +95,10 @@ services:
 
   blockchain:
     build: ./packages/contracts
-    command: ["npx", "hardhat", "node", "--hostname", "0.0.0.0"]
     networks:
       - internal_net
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8545"]
+      test: ["CMD", "nc", "-z", "localhost", "8545"]
       interval: 15s
       timeout: 5s
       retries: 5

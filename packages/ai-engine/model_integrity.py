@@ -43,8 +43,7 @@ def verify_model_integrity():
     """
     # Check model file exists
     if not os.path.exists(MODEL_PATH):
-        logger.warning("model.pkl not found — skipping integrity check for initial boot")
-        return
+        raise RuntimeError(f"FATAL: Model file {MODEL_PATH} not found. Integrity cannot be verified.")
 
     # Compute current model hash
     with open(MODEL_PATH, 'rb') as f:
@@ -53,53 +52,58 @@ def verify_model_integrity():
 
     # Connect to blockchain
     if not CONTRACT_ADDRESS:
-        logger.warning("ACCESS_POLICY_ADDRESS not set — skipping on-chain verification")
-        return
+        raise RuntimeError("FATAL: ACCESS_POLICY_ADDRESS not set. Required for on-chain integrity check.")
 
-    try:
-        # Use provided RPC or default to localhost for dev
-        rpc_url = BLOCKCHAIN_RPC
-        if 'localhost' in rpc_url and os.environ.get('DOCKER_ENV'):
-            # If running in Docker but pointing to localhost, use host.docker.internal or gateway
-            rpc_url = rpc_url.replace('localhost', 'host.docker.internal')
+    import time
+    
+    max_retries = 15
+    retry_delay = 5
+    
+    for attempt in range(max_retries):
+        try:
+            # Use provided RPC or default to localhost for dev
+            rpc_url = BLOCKCHAIN_RPC
+            if 'localhost' in rpc_url and os.environ.get('DOCKER_ENV'):
+                rpc_url = rpc_url.replace('localhost', 'host.docker.internal')
 
-        w3 = Web3(Web3.HTTPProvider(rpc_url))
-        if not w3.is_connected():
-            logger.error(f"Cannot connect to blockchain at {rpc_url}")
-            if os.environ.get('ENVIRONMENT') == 'production':
-                raise RuntimeError(f"Cannot connect to blockchain at {rpc_url}")
-            return
+            w3 = Web3(Web3.HTTPProvider(rpc_url))
+            if not w3.is_connected():
+                logger.warning(f"Waiting for blockchain connection... (Attempt {attempt+1}/{max_retries})")
+                time.sleep(retry_delay)
+                continue
 
-        contract = w3.eth.contract(
-            address=Web3.to_checksum_address(CONTRACT_ADDRESS),
-            abi=ACCESS_POLICY_ABI
-        )
-
-        # Fetch on-chain registered hash
-        on_chain_hash_bytes = contract.functions.registeredModelHash().call()
-        on_chain_hash = on_chain_hash_bytes.hex()
-        
-        # Remove '0x' prefix if present for comparison
-        if on_chain_hash.startswith('0x'):
-            on_chain_hash = on_chain_hash[2:]
-
-        # Zero bytes32 means hash was never registered (initial deployment)
-        if on_chain_hash == '0' * 64:
-            logger.warning("No model hash registered on-chain yet — skipping integrity check")
-            return
-
-        # CRITICAL COMPARISON (NFR-09)
-        if current_hash != on_chain_hash:
-            raise RuntimeError(
-                f"MODEL INTEGRITY FAILURE: "
-                f"current={current_hash} != on-chain={on_chain_hash}"
+            contract = w3.eth.contract(
+                address=Web3.to_checksum_address(CONTRACT_ADDRESS),
+                abi=ACCESS_POLICY_ABI
             )
 
-        logger.info(f"Model integrity verified: hash matches on-chain record.")
+            # Fetch on-chain registered hash
+            on_chain_hash_bytes = contract.functions.registeredModelHash().call()
+            on_chain_hash = on_chain_hash_bytes.hex()
+            
+            # Remove '0x' prefix if present for comparison
+            if on_chain_hash.startswith('0x'):
+                on_chain_hash = on_chain_hash[2:]
 
-    except RuntimeError:
-        raise
-    except Exception as e:
-        logger.error(f"Blockchain integrity check failed: {e}")
-        if os.environ.get('ENVIRONMENT') == 'production':
-            raise RuntimeError(f"Cannot verify model integrity: {e}")
+            # Zero bytes32 means hash was never registered (initial deployment)
+            if on_chain_hash == '0' * 64:
+                logger.warning("No model hash registered on-chain yet — skipping integrity check")
+                return
+
+            # CRITICAL COMPARISON (NFR-09)
+            if current_hash != on_chain_hash:
+                raise RuntimeError(
+                    f"MODEL INTEGRITY FAILURE: "
+                    f"current={current_hash} != on-chain={on_chain_hash}"
+                )
+
+            logger.info(f"Model integrity verified: hash matches on-chain record.")
+            return # Success!
+
+        except (RuntimeError, Exception) as e:
+            if attempt < max_retries - 1:
+                logger.warning(f"Blockchain check failed (contract likely not deployed yet): {e}. Retrying in {retry_delay}s...")
+                time.sleep(retry_delay)
+            else:
+                logger.critical(f"FATAL: Blockchain integrity check failed after {max_retries} attempts: {e}")
+                raise RuntimeError(f"Cannot verify model integrity: {e}")

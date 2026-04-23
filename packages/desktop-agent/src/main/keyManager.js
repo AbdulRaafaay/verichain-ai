@@ -15,6 +15,11 @@ const { safeStorage, app } = require('electron');
 const crypto = require('crypto');
 const path = require('path');
 const fs = require('fs');
+const snarkjs = require('snarkjs');
+
+// Circuit paths
+const CIRCUIT_WASM = path.join(__dirname, '../../circuits/identity_js/identity.wasm');
+const CIRCUIT_ZKEY = path.join(__dirname, '../../circuits/identity_final.zkey');
 
 // We use a local file for the identity, but its content is encrypted by safeStorage
 const IDENTITY_FILE = path.join(app.getPath('userData'), 'identity.enc');
@@ -57,25 +62,28 @@ function loadPrivateKey() {
     return Buffer.from(hexKey, 'hex');
 }
 
-/**
- * Generate a ZKP proof of identity knowledge.
- * MOCKED for development as SNARK circuits are large.
- */
 async function generateZKProof(sessionNonce) {
     const sk = loadPrivateKey();
     try {
-        // In real app, this would use snarkjs.groth16.fullProve
-        // Mocking valid proof format for Gateway validation
-        return {
-            proof: {
-                pi_a: ["0", "0", "0"],
-                pi_b: [["0", "0"], ["0", "0"], ["0", "0"]],
-                pi_c: ["0", "0", "0"],
-                protocol: "groth16",
-                curve: "bn128"
-            },
-            publicSignals: ["0"]
+        if (!fs.existsSync(CIRCUIT_WASM) || !fs.existsSync(CIRCUIT_ZKEY)) {
+            throw new Error('ZKP Circuit files missing. Proof generation failed.');
+        }
+
+        const input = {
+            privateKey: BigInt('0x' + sk.toString('hex')),
+            nonce: BigInt('0x' + Buffer.from(sessionNonce.replace(/-/g, ''), 'hex').toString('hex'))
         };
+
+        const { proof, publicSignals } = await snarkjs.groth16.fullProve(
+            input,
+            CIRCUIT_WASM,
+            CIRCUIT_ZKEY
+        );
+
+        return { proof, publicSignals };
+    } catch (err) {
+        console.error('ZKP Generation Error:', err.message);
+        throw err;
     } finally {
         sk.fill(0);
     }

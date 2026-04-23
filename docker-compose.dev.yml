@@ -1,19 +1,51 @@
-version: '3.9'
+version: '3.8'
 
 services:
   gateway:
-    environment:
-      - NODE_ENV=development
+    build:
+      context: ./packages/gateway
+      dockerfile: Dockerfile
     volumes:
       - ./packages/gateway/src:/app/src
+      - ./certs:/app/certs
+    environment:
+      - NODE_ENV=development
+      - MONGODB_URI=mongodb://mongodb:27017/verichain
+      - REDIS_URI=redis://redis:6379
+      - BLOCKCHAIN_RPC=http://blockchain:8545
+    ports:
+      - "8443:8443"
+    depends_on:
+      - mongodb
+      - redis
+      - blockchain
 
   ai-engine:
-    environment:
-      - ENVIRONMENT=development
+    build:
+      context: ./packages/ai-engine
+      dockerfile: Dockerfile
     volumes:
       - ./packages/ai-engine:/app
+    environment:
+      - ENVIRONMENT=development
+      - BLOCKCHAIN_RPC=http://blockchain:8545
+    ports:
+      - "5001:5001"
+    depends_on:
+      - blockchain
 
-  trust-dashboard:
-    volumes:
-      - ./packages/trust-dashboard/src:/app/src
+  mongodb:
+    image: mongo:latest
+    ports:
+      - "27017:27017"
 
+  redis:
+    image: redis:latest
+    ports:
+      - "6379:6379"
+
+  blockchain:
+    image: trufflesuite/ganache-cli:latest
+    ports:
+      - "8545:8545"
+    command: ["ganache-cli", "-h", "0.0.0.0", "--db", "/app/db"]

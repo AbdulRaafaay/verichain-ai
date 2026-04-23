@@ -25,12 +25,7 @@ app = Flask(__name__)
 # Load HMAC secret from environment — NEVER hardcode
 AI_HMAC_SECRET = os.environ.get('AI_HMAC_SECRET')
 if not AI_HMAC_SECRET:
-    # Use a fallback for development if not in production
-    if os.environ.get('ENVIRONMENT') == 'production':
-        raise RuntimeError("FATAL: AI_HMAC_SECRET environment variable not set")
-    else:
-        logger.warning("AI_HMAC_SECRET not set — using dev default (INSECURE)")
-        AI_HMAC_SECRET = "dev_secret"
+    raise RuntimeError("FATAL: AI_HMAC_SECRET environment variable not set. HMAC is mandatory for Gateway authentication.")
 
 # Verify model integrity against blockchain BEFORE starting (NFR-09)
 # This will raise RuntimeError if hash mismatches — container will not start
@@ -39,9 +34,8 @@ try:
     verify_model_integrity()
     logger.info("Model integrity verified. Starting AI Risk Engine.")
 except Exception as e:
-    logger.error(f"Integrity check failed: {e}")
-    if os.environ.get('ENVIRONMENT') == 'production':
-        raise RuntimeError(f"FATAL: Model integrity failure: {e}")
+    logger.critical(f"FATAL: Model integrity check failed: {e}. System Halted.")
+    raise RuntimeError(f"FATAL: Model integrity failure: {e}")
 
 # Load the risk engine (Isolation Forest model)
 engine = RiskEngine()
