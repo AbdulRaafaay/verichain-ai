@@ -1,0 +1,19 @@
+version: '3.9'
+
+services:
+  gateway:
+    environment:
+      - NODE_ENV=development
+    volumes:
+      - ./packages/gateway/src:/app/src
+
+  ai-engine:
+    environment:
+      - ENVIRONMENT=development
+    volumes:
+      - ./packages/ai-engine:/app
+
+  trust-dashboard:
+    volumes:
+      - ./packages/trust-dashboard/src:/app/src
+

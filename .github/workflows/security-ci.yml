@@ -1,0 +1,48 @@
+name: VeriChain Security CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+jobs:
+  security-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Gateway audit
+        working-directory: packages/gateway
+        run: npm audit --audit-level=high
+
+      - name: Desktop audit
+        working-directory: packages/desktop-agent
+        run: npm audit --audit-level=high
+
+      - name: AI pip audit
+        working-directory: packages/ai-engine
+        run: |
+          python -m pip install --upgrade pip
+          pip install pip-audit
+          pip-audit -r requirements.txt
+
+      - name: Contract tests
+        working-directory: packages/contracts
+        run: |
+          npm ci
+          npx hardhat test
