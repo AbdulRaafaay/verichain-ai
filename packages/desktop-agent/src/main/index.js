@@ -56,6 +56,16 @@ app.whenReady().then(() => {
     });
 });
 
+// Powerful bypass for local development SSL errors
+app.on('certificate-error', (event, webContents, url, error, certificate, callback) => {
+    if (url.startsWith('https://localhost:8443')) {
+        event.preventDefault();
+        callback(true);
+    } else {
+        callback(false);
+    }
+});
+
 app.on('window-all-closed', () => {
     if (process.platform !== 'darwin') app.quit();
 });
