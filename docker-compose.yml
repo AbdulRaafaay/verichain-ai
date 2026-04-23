@@ -28,6 +28,10 @@ services:
       - GATEWAY_PRIVATE_KEY=${GATEWAY_PRIVATE_KEY}
       - AI_ENGINE_URL=${AI_ENGINE_URL}
       - AI_HMAC_SECRET=${AI_HMAC_SECRET}
+      - HMAC_SECRET=${HMAC_SECRET}
+      - JWT_SECRET=${JWT_SECRET}
+      - DESKTOP_AGENT_ORIGIN=${DESKTOP_AGENT_ORIGIN}
+      - TRUST_DASHBOARD_ORIGIN=${TRUST_DASHBOARD_ORIGIN}
     volumes:
       - ./certs:/app/certs:ro
     networks:
@@ -100,6 +104,7 @@ services:
     build: ./packages/trust-dashboard
     environment:
       - REACT_APP_GATEWAY_URL=${REACT_APP_GATEWAY_URL}
+      - REACT_APP_WS_URL=${REACT_APP_WS_URL}
     networks:
       - public_net
     ports:
