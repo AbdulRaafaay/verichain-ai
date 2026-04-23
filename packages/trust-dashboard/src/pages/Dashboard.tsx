@@ -1,10 +1,24 @@
 import React, { useEffect, useState } from 'react';
 import { io } from 'socket.io-client';
 
+interface AuditLog {
+    timestamp: string;
+    eventType: string;
+    userHash: string;
+    decision: string;
+}
+
+interface TamperAlert {
+    type: string;
+    timestamp: string;
+    anchoredRoot: string;
+    recomputedRoot: string;
+}
+
 const Dashboard: React.FC = () => {
-    const [logs, setLogs] = useState<any[]>([]);
+    const [logs, setLogs] = useState<AuditLog[]>([]);
     const [merkleStatus, setMerkleStatus] = useState<any>(null);
-    const [alerts, setAlerts] = useState<any[]>([]);
+    const [alerts, setAlerts] = useState<TamperAlert[]>([]);
 
     useEffect(() => {
         const socket = io(process.env.REACT_APP_GATEWAY_URL || 'https://localhost:8443', {
@@ -12,8 +26,8 @@ const Dashboard: React.FC = () => {
         });
 
         socket.on('merkle_status', (status) => setMerkleStatus(status));
-        socket.on('tamper_alert', (alert) => setAlerts(prev => [alert, ...prev]));
-        socket.on('audit_log', (log) => setLogs(prev => [log, ...prev].slice(0, 50)));
+        socket.on('tamper_alert', (alert: TamperAlert) => setAlerts(prev => [alert, ...prev]));
+        socket.on('audit_log', (log: AuditLog) => setLogs(prev => [log, ...prev].slice(0, 50)));
 
         return () => { socket.disconnect(); };
     }, []);
@@ -37,7 +51,7 @@ const Dashboard: React.FC = () => {
                     ) : <p>Waiting for anchoring cycle (60s)...</p>}
                 </div>
 
-                <div style={{ background: '#111d35', padding: '1rem', borderRadius: '8px', border: alerts.length ? '1fr solid #ef4444' : 'none' }}>
+                <div style={{ background: '#111d35', padding: '1rem', borderRadius: '8px', border: alerts.length ? '1px solid #ef4444' : 'none' }}>
                     <h2>Security Alerts</h2>
                     {alerts.length === 0 ? <p>No tamper alerts detected.</p> : (
                         <ul>
