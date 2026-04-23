@@ -47,17 +47,36 @@ app.get('/health', (req, res) => {
 });
 
 async function startServer() {
-    // Database connection
-    await mongoose.connect(env.MONGODB_URI);
-    logger.info('Connected to MongoDB');
+    // Database connection with retry
+    let connected = false;
+    while (!connected) {
+        try {
+            await mongoose.connect(env.MONGODB_URI);
+            connected = true;
+            logger.info('Connected to MongoDB');
+        } catch (err) {
+            logger.warn('MongoDB not ready, retrying in 5s...', { error: err.message });
+            await new Promise(resolve => setTimeout(resolve, 5000));
+        }
+    }
 
-    // Blockchain client
-    await initBlockchainClient({
-        rpcUrl: env.BLOCKCHAIN_RPC,
-        accessPolicyAddress: env.ACCESS_POLICY_ADDRESS,
-        auditLedgerAddress: env.AUDIT_LEDGER_ADDRESS,
-        gatewayPrivateKey: env.GATEWAY_PRIVATE_KEY,
-    });
+    // Blockchain client with retry
+    let bcConnected = false;
+    while (!bcConnected) {
+        try {
+            await initBlockchainClient({
+                rpcUrl: env.BLOCKCHAIN_RPC,
+                accessPolicyAddress: env.ACCESS_POLICY_ADDRESS,
+                auditLedgerAddress: env.AUDIT_LEDGER_ADDRESS,
+                gatewayPrivateKey: env.GATEWAY_PRIVATE_KEY,
+            });
+            bcConnected = true;
+            logger.info('Connected to Blockchain');
+        } catch (err) {
+            logger.warn('Blockchain not ready, retrying in 5s...', { error: err.message });
+            await new Promise(resolve => setTimeout(resolve, 5000));
+        }
+    }
 
     // mTLS server options
     const tlsOptions = {
