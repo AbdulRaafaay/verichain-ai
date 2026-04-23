@@ -19,6 +19,7 @@
     "paths": {
       "*": ["node_modules/*", "../../node_modules/*"]
     },
+    "typeRoots": [],
     "types": ["node", "react", "react-dom", "react-router-dom"],
     "ignoreDeprecations": "6.0"
   },
