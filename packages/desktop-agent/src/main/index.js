@@ -12,6 +12,9 @@ const logger = winston.createLogger({
     transports: [new winston.transports.Console()]
 });
 
+// Allow self-signed certificates for local development (mTLS Gateway)
+app.commandLine.appendSwitch('ignore-certificate-errors');
+
 let mainWindow;
 
 function createWindow() {
