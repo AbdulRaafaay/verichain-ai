@@ -7,10 +7,16 @@ const { startHeartbeat, stopHeartbeat } = require('./heartbeat');
 const axios = require('axios');
 const winston = require('winston');
 const https = require('https');
+const fs = require('fs');
+const path = require('path');
 
-// Allow self-signed certs for Axios in local dev
+// Load mTLS certificates for local development
+const certPath = path.join(__dirname, '../../../../certs');
 const httpsAgent = new https.Agent({
-    rejectUnauthorized: false
+    rejectUnauthorized: false, // Still allow self-signed for dev
+    cert: fs.readFileSync(path.join(certPath, 'client-cert.pem')),
+    key: fs.readFileSync(path.join(certPath, 'client-key.pem')),
+    ca: fs.readFileSync(path.join(certPath, 'ca-cert.pem'))
 });
 
 const logger = winston.createLogger({
