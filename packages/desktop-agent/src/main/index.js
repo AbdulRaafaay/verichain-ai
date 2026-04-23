@@ -8,7 +8,6 @@ const axios = require('axios');
 const winston = require('winston');
 const https = require('https');
 const fs = require('fs');
-const path = require('path');
 
 // Load mTLS certificates for local development
 const certPath = path.join(__dirname, '../../../../certs');
