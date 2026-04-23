@@ -37,6 +37,16 @@ function createWindow() {
 
     // In development, load from localhost:3000 (React dev server)
     // In production, load from build/index.html
+    // Force trust for localhost during development
+    mainWindow.webContents.session.setCertificateVerifyProc((request, callback) => {
+        const { hostname } = request;
+        if (hostname === 'localhost') {
+            callback(0); // 0 = trust
+        } else {
+            callback(-2); // -2 = use default verification
+        }
+    });
+
     const startUrl = process.env.NODE_ENV === 'development' 
         ? 'http://localhost:3000' 
         : `file://${path.join(__dirname, '../renderer/index.html')}`;
