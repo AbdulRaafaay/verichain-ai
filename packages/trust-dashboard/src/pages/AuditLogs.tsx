@@ -45,7 +45,7 @@ const AuditLogs: React.FC = () => {
                     </tr>
                 </thead>
                 <tbody>
-                    {logs.map(log => (
+                    {logs.map((log: AuditLog) => (
                         <tr key={log._id}>
                             <td>{new Date(log.timestamp).toLocaleString()}</td>
                             <td>{log.eventType}</td>

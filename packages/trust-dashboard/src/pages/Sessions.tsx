@@ -33,7 +33,7 @@ const Sessions: React.FC = () => {
         try {
             const gatewayUrl = process.env.REACT_APP_GATEWAY_URL || 'https://localhost:8443';
             await axios.post(`${gatewayUrl}/admin/revoke-session`, { sessionId: id }, { withCredentials: true });
-            setSessions(prev => prev.map(s => s.id === id ? { ...s, status: 'REVOKED' } : s));
+            setSessions((prev: Session[]) => prev.map((s: Session) => s.id === id ? { ...s, status: 'REVOKED' } : s));
         } catch (err) {
             console.error('Failed to revoke session', err);
         }
@@ -53,7 +53,7 @@ const Sessions: React.FC = () => {
                     </tr>
                 </thead>
                 <tbody>
-                    {sessions.map(s => (
+                    {sessions.map((s: Session) => (
                         <tr key={s.id}>
                             <td>{s.id.substring(0, 8)}...</td>
                             <td>{s.userHash.substring(0, 8)}...</td>

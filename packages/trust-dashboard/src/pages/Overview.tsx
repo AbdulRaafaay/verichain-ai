@@ -24,7 +24,7 @@ const Overview: React.FC = () => {
         });
 
         socket.on('stats_update', (newStats) => setStats(newStats));
-        socket.on('tamper_alert', (alert) => setRecentAlerts(prev => [alert, ...prev].slice(0, 5)));
+        socket.on('tamper_alert', (alert: any) => setRecentAlerts((prev: any[]) => [alert, ...prev].slice(0, 5)));
         socket.on('merkle_status', (status) => setBlockchainStatus(status));
 
         return () => { socket.disconnect(); };
@@ -69,7 +69,7 @@ const Overview: React.FC = () => {
                     <h2>Recent Alerts</h2>
                     {recentAlerts.length === 0 ? <p>No recent alerts.</p> : (
                         <ul>
-                            {recentAlerts.map((a, i) => (
+                            {recentAlerts.map((a: any, i: number) => (
                                 <li key={i} style={{ color: '#ef4444' }}>
                                     <strong>{a.type}</strong> - {new Date(a.timestamp).toLocaleTimeString()}
                                 </li>
