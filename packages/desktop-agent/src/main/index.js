@@ -13,9 +13,9 @@ const fs = require('fs');
 const certPath = path.join(__dirname, '../../../../certs');
 const httpsAgent = new https.Agent({
     rejectUnauthorized: false, // Still allow self-signed for dev
-    cert: fs.readFileSync(path.join(certPath, 'client-cert.pem')),
-    key: fs.readFileSync(path.join(certPath, 'client-key.pem')),
-    ca: fs.readFileSync(path.join(certPath, 'ca-cert.pem'))
+    cert: fs.readFileSync(path.join(certPath, 'client.crt')),
+    key: fs.readFileSync(path.join(certPath, 'client.key')),
+    ca: fs.readFileSync(path.join(certPath, 'ca.crt'))
 });
 
 const logger = winston.createLogger({
