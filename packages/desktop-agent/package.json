@@ -11,10 +11,15 @@
     "axios": "^1.6.2",
     "dotenv": "^16.3.1",
     "snarkjs": "^0.7.1",
-    "winston": "^3.11.0"
+    "winston": "^3.11.0",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0"
   },
   "devDependencies": {
     "electron": "^28.0.0",
-    "electron-builder": "^24.6.4"
+    "electron-builder": "^24.6.4",
+    "typescript": "^4.9.5",
+    "@types/react": "^18.2.0",
+    "@types/react-dom": "^18.2.0"
   }
 }
