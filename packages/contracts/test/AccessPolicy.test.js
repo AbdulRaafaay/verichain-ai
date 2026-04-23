@@ -44,6 +44,14 @@ describe("AccessPolicy", function () {
       expect(await accessPolicy.connect(gateway).checkAccess.staticCall(userHash, resourceHash)).to.be.true;
     });
 
+    it("Should not execute change with only one approval", async function () {
+      const changeHash = ethers.keccak256(ethers.toUtf8Bytes("change-threshold"));
+      await accessPolicy.connect(admin1).proposeChange(changeHash);
+      await accessPolicy.connect(admin1).approveChange(changeHash, userHash, resourceHash, true);
+
+      expect(await accessPolicy.connect(gateway).checkAccess.staticCall(userHash, resourceHash)).to.be.false;
+    });
+
     it("Should prevent duplicate approvals", async function () {
         const changeHash = ethers.keccak256(ethers.toUtf8Bytes("change1"));
         await accessPolicy.connect(admin1).proposeChange(changeHash);
