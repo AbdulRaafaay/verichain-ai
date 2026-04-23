@@ -6,6 +6,12 @@ const { enrollUser, isEnrolled, generateZKProof } = require('./keyManager');
 const { startHeartbeat, stopHeartbeat } = require('./heartbeat');
 const axios = require('axios');
 const winston = require('winston');
+const https = require('https');
+
+// Allow self-signed certs for Axios in local dev
+const httpsAgent = new https.Agent({
+    rejectUnauthorized: false
+});
 
 const logger = winston.createLogger({
     format: winston.format.combine(winston.format.timestamp(), winston.format.json()),
@@ -77,14 +83,13 @@ ipcMain.handle('auth:login', async (event, { sessionNonce, userHash, deviceId })
             deviceId,
             userHash
         }, {
-            // In a real scenario, we'd attach the mTLS certs here
-            // httpsAgent: ...
+            httpsAgent
         });
 
         if (response.data.sessionId) {
             // Start heartbeats
             startHeartbeat(response.data.sessionId, async (sid) => {
-                await axios.post(`${gatewayUrl}/auth/heartbeat`, { sessionId: sid });
+                await axios.post(`${gatewayUrl}/auth/heartbeat`, { sessionId: sid }, { httpsAgent });
             });
         }
 
