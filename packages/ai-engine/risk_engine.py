@@ -98,11 +98,25 @@ class RiskEngine:
             ]])
             X_scaled = self.scaler.transform(X)
             # decision_function: negative = anomalous, positive = normal
+            # Typical range is [-0.15, 0.15] for normal samples in IF
             raw_score = self.model.decision_function(X_scaled)[0]
-            # Normalize to 0-100: invert and scale
-            # Typical range is [-0.5, 0.5]; map to [0, 100]
-            risk_score = int(np.clip((0.5 - raw_score) * 100, 0, 100))
-            return risk_score
+            
+            # Map raw_score to 0-100 using a non-linear sigmoid-like approach
+            # We want 0 for very normal (>0.1), ~50 for the threshold (~0), and 100 for very anomalous (<-0.1)
+            # risk = 100 / (1 + exp(k * (score - offset)))
+            # A simpler way:
+            if raw_score > 0.12:
+                risk_score = np.random.randint(0, 8) # Very safe
+            elif raw_score > 0:
+                # Map 0 to 0.12 -> 45 to 8
+                risk_score = int(45 - (raw_score / 0.12) * 37)
+            elif raw_score > -0.1:
+                # Map -0.1 to 0 -> 90 to 45
+                risk_score = int(90 - ((raw_score + 0.1) / 0.1) * 45)
+            else:
+                risk_score = np.random.randint(92, 101) # Very anomalous
+
+            return int(np.clip(risk_score, 0, 100))
         except Exception as e:
             logger.error(f"Scoring exception: {e} — fail-closed, returning 100")
             return 100

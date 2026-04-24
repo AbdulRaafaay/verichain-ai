@@ -1,6 +1,5 @@
 pragma circom 2.0.0;
-
-include "../../node_modules/circomlib/circuits/poseidon.circom";
+include "circomlib/circuits/poseidon.circom";
 
 template Identity() {
     signal input privateKey;

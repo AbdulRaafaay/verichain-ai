@@ -3,7 +3,7 @@ import crypto from 'crypto';
 import { AuditLogModel } from '../models/audit-log.model';
 import { BlockchainService } from './blockchain.service';
 import { logger } from '../utils/logger';
-import { broadcastSecurityAlert } from './socket.service';
+import { broadcastSecurityAlert, getIO } from './socket.service';
 
 /**
  * MerkleService handles the batching of audit logs and anchoring roots to blockchain.
@@ -30,10 +30,12 @@ export class MerkleService {
         logger.info(`Starting Merkle batch for ${logs.length} logs...`);
 
         // 2. Build Merkle Tree
-        const leaves = logs.map(log => 
+        // hashFn must return Buffer — crypto.createHash().update().digest() does this correctly.
+        const hashFn = (data: Buffer) => crypto.createHash('sha256').update(data).digest();
+        const leaves = logs.map(log =>
             crypto.createHash('sha256').update(JSON.stringify(log.metadata)).digest()
         );
-        const tree = new MerkleTree(leaves, crypto.createHash('sha256').update.bind(crypto.createHash('sha256')), { sortPairs: true });
+        const tree = new MerkleTree(leaves, hashFn, { sortPairs: true });
         const root = tree.getRoot().toString('hex');
 
         // 3. Anchor Root to Blockchain (NFR-13)
@@ -49,32 +51,63 @@ export class MerkleService {
 
             logger.info(`Merkle Root anchored: 0x${root} | Tx: ${receipt.hash}`);
 
-            // 5. Tamper Detection (NFR-14)
-            // Recompute root from database and compare with what we just anchored
+            // 5. Notify Trust Dashboard — Merkle Chain tab & Blockchain tab
+            try {
+                const io = getIO();
+                const anchorPayload = {
+                    rootHash:    `0x${root}`,
+                    blockNumber: receipt.blockNumber ?? 0,
+                    logCount:    logs.length,
+                    timestamp:   new Date().toISOString(),
+                    status:      'CLEAN' as const,
+                    txHash:      receipt.hash,
+                };
+                io.emit('merkle_anchor', anchorPayload);
+                io.emit('blockchain_event', {
+                    id:          receipt.hash,
+                    event:       'MerkleRootAnchored',
+                    txHash:      receipt.hash,
+                    blockNumber: receipt.blockNumber ?? 0,
+                    timestamp:   anchorPayload.timestamp,
+                    details:     { logCount: logs.length, root: `0x${root}`.substring(0, 18) + '…' },
+                });
+            } catch { /* socket not ready */ }
+
+            // 6. Tamper Detection (NFR-14) — recompute and compare
             const currentLogs = await AuditLogModel.find({
                 merkleRoot: root,
                 anchored: true
             }).sort({ timestamp: 1 });
 
-            const recomputedLeaves = currentLogs.map(l => 
+            const recomputedLeaves = currentLogs.map(l =>
                 crypto.createHash('sha256').update(JSON.stringify(l.metadata)).digest()
             );
-            const recomputedTree = new MerkleTree(recomputedLeaves, crypto.createHash('sha256').update.bind(crypto.createHash('sha256')), { sortPairs: true });
+            const recomputedTree = new MerkleTree(recomputedLeaves, hashFn, { sortPairs: true });
             const recomputedRoot = recomputedTree.getRoot().toString('hex');
 
             if (recomputedRoot !== root) {
                 logger.error('TAMPER DETECTED: Database logs modified after anchoring!');
-                
-                // Emit alert to Dashboard
-                broadcastSecurityAlert({
-                    type: 'TAMPER_ALERT',
-                    message: 'Audit log integrity violation detected (Merkle Mismatch)',
-                    timestamp: new Date()
-                });
 
-                // Trigger on-chain alert
+                const tamperPayload = {
+                    type:      'TAMPER_ALERT',
+                    severity:  'CRITICAL' as const,
+                    timestamp: new Date().toISOString(),
+                    details:   'Merkle mismatch: database logs were modified after blockchain anchoring',
+                    txHash:    receipt.hash,
+                };
+
+                broadcastSecurityAlert(tamperPayload as any);
+
                 try {
-                    await BlockchainService.accessPolicy.triggerAlert('MERKLE_MISMATCH', `0x${root}`);
+                    const io = getIO();
+                    io.emit('tamper_alert', tamperPayload);
+                } catch { /* socket not ready */ }
+
+                try {
+                    await BlockchainService.accessPolicy.triggerAlert(
+                        'MERKLE_MISMATCH',
+                        `0x${root}`
+                    );
                 } catch (alertErr) {
                     logger.error('Failed to trigger on-chain alert', { error: (alertErr as Error).message });
                 }
@@ -84,10 +117,10 @@ export class MerkleService {
         } catch (err) {
             logger.error('Blockchain Anchoring Failed', { error: (err as Error).message });
             broadcastSecurityAlert({
-                type: 'ANCHOR_FAILURE',
-                message: 'Failed to anchor audit logs to blockchain',
-                timestamp: new Date()
-            });
+                type:      'ANCHOR_FAILURE',
+                message:   'Failed to anchor audit logs to blockchain',
+                timestamp: new Date(),
+            } as any);
         }
     }
 }

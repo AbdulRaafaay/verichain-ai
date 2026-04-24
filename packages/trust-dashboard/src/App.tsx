@@ -1,45 +1,74 @@
 import React from 'react';
-import { BrowserRouter as Router, Routes, Route, Link } from 'react-router-dom';
-import Overview from './pages/Overview';
-import Sessions from './pages/Sessions';
-import AuditLogs from './pages/AuditLogs';
+import { BrowserRouter as Router, Routes, Route, NavLink } from 'react-router-dom';
+import Overview      from './pages/Overview';
+import Sessions      from './pages/Sessions';
+import AuditLogs     from './pages/AuditLogs';
+import MerkleChain   from './pages/MerkleChain';
 import PolicyManager from './pages/PolicyManager';
-import ThreatAlerts from './pages/ThreatAlerts';
-import Analytics from './pages/Analytics';
-
+import Blockchain    from './pages/Blockchain';
+import ThreatAlerts  from './pages/ThreatAlerts';
 import './App.css';
 
-const App: React.FC = () => {
-    return (
-        <Router>
-            <div className="dashboard-container" style={{ display: 'flex', minHeight: '100vh', backgroundColor: '#0a0f1e', color: '#e8edf5' }}>
-                <nav className="sidebar" style={{ width: '240px', borderRight: '1px solid #1e3060', padding: '1.5rem' }}>
-                    <div className="brand" style={{ marginBottom: '2.5rem', fontWeight: 700, fontSize: '1.2rem', color: '#3b82f6' }}>
-                        VeriChain AI
-                    </div>
-                    <ul style={{ listStyle: 'none', padding: 0 }}>
-                        <li style={{ marginBottom: '1rem' }}><Link to="/" className="nav-link">Overview</Link></li>
-                        <li style={{ marginBottom: '1rem' }}><Link to="/sessions" className="nav-link">Sessions</Link></li>
-                        <li style={{ marginBottom: '1rem' }}><Link to="/logs" className="nav-link">Audit Logs</Link></li>
-                        <li style={{ marginBottom: '1rem' }}><Link to="/policies" className="nav-link">Policy Manager</Link></li>
-                        <li style={{ marginBottom: '1rem' }}><Link to="/alerts" className="nav-link">Threat Alerts</Link></li>
-                        <li style={{ marginBottom: '1rem' }}><Link to="/analytics" className="nav-link">Analytics</Link></li>
-                    </ul>
-                </nav>
+const NAV = [
+    { to: '/',          icon: '⬡', label: 'Overview'        },
+    { to: '/sessions',  icon: '◎', label: 'Sessions'        },
+    { to: '/logs',      icon: '≡', label: 'Audit Logs'      },
+    { to: '/merkle',    icon: '🌳', label: 'Merkle Chain'    },
+    { to: '/policies',  icon: '⊕', label: 'Policy Manager'  },
+    { to: '/blockchain', icon: '⛓', label: 'Blockchain'      },
+    { to: '/alerts',    icon: '⚡', label: 'Threat Alerts'   },
+];
 
-                <main style={{ flex: 1, padding: '2rem', overflowY: 'auto' }}>
-                    <Routes>
-                        <Route path="/" element={<Overview />} />
-                        <Route path="/sessions" element={<Sessions />} />
-                        <Route path="/logs" element={<AuditLogs />} />
-                        <Route path="/policies" element={<PolicyManager />} />
-                        <Route path="/alerts" element={<ThreatAlerts />} />
-                        <Route path="/analytics" element={<Analytics />} />
-                    </Routes>
-                </main>
-            </div>
-        </Router>
-    );
-};
+const App: React.FC = () => (
+    <Router>
+        <div className="dashboard-container">
+            <nav className="sidebar">
+                <div className="brand">
+                    <div className="brand-inner">
+                        <div className="brand-icon">🔐</div>
+                        <div>
+                            <div className="brand-name">VeriChain AI</div>
+                            <div className="brand-tag">Trust Dashboard</div>
+                        </div>
+                    </div>
+                </div>
+
+                <div className="sidebar-nav-area">
+                    <div className="nav-section">Monitor</div>
+                    {NAV.map(({ to, icon, label }) => (
+                        <NavLink
+                            key={to}
+                            to={to}
+                            end={to === '/'}
+                            className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}
+                        >
+                            <span className="nav-icon">{icon}</span>
+                            {label}
+                        </NavLink>
+                    ))}
+                </div>
+
+                <div className="sidebar-status">
+                    <div className="status-pill">
+                        <div className="pulse-dot" />
+                        <span>Gateway Connected</span>
+                    </div>
+                </div>
+            </nav>
+
+            <main>
+                <Routes>
+                    <Route path="/"           element={<Overview />}      />
+                    <Route path="/sessions"   element={<Sessions />}      />
+                    <Route path="/logs"       element={<AuditLogs />}     />
+                    <Route path="/merkle"     element={<MerkleChain />}   />
+                    <Route path="/policies"   element={<PolicyManager />} />
+                    <Route path="/blockchain" element={<Blockchain />}    />
+                    <Route path="/alerts"     element={<ThreatAlerts />}  />
+                </Routes>
+            </main>
+        </div>
+    </Router>
+);
 
 export default App;

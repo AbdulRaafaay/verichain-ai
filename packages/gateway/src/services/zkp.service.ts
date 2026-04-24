@@ -14,8 +14,12 @@ export class ZKPService {
     static async verifyProof(proof: any, publicSignals: any): Promise<boolean> {
         try {
             if (!fs.existsSync(this.VK_PATH)) {
+                if (process.env.NODE_ENV === 'development') {
+                    logger.warn('DEV MODE: verification_key.json not found — ZKP check bypassed. Compile circuits for production.');
+                    return true;
+                }
                 logger.error('ZKP Verification Key missing', { path: this.VK_PATH });
-                return false; // Fail-closed
+                return false; // Fail-closed in production
             }
 
             const vKey = JSON.parse(fs.readFileSync(this.VK_PATH, 'utf-8'));

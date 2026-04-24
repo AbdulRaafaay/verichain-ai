@@ -4,10 +4,13 @@ import { logger } from '../utils/logger';
 let io: Server;
 
 export const initSocket = (server: any) => {
+    const allowedOrigin = process.env.TRUST_DASHBOARD_ORIGIN || 'http://localhost:3001';
+    logger.info(`Socket.io Initializing. Allowed Origin: ${allowedOrigin}`);
     io = new Server(server, {
         cors: {
-            origin: '*', // In production, restrict to TRUST_DASHBOARD_ORIGIN
-            methods: ['GET', 'POST']
+            origin: allowedOrigin,
+            methods: ['GET', 'POST'],
+            credentials: true,
         }
     });
 

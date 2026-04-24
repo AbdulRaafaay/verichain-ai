@@ -1,14 +1,11 @@
 # VeriChain AI — Complete System Orchestration
 # Network isolation: public_net (Nginx, Dashboard) vs internal_net (Everything else)
 
-version: '3.9'
-
 networks:
   public_net:
     driver: bridge
   internal_net:
     driver: bridge
-    internal: true
 
 volumes:
   mongodb_data:
@@ -38,9 +35,12 @@ services:
     networks:
       - public_net
     depends_on:
-      - gateway
-      - trust-dashboard
-      - setup
+      setup:
+        condition: service_completed_successfully
+      gateway:
+        condition: service_started
+      trust-dashboard:
+        condition: service_started
     restart: unless-stopped
 
   gateway:
@@ -65,14 +65,20 @@ services:
       - CA_CERT_PATH=/app/certs/ca.crt
     volumes:
       - ./certs:/app/certs:ro
+    ports:
+      - "8443:8443"
     networks:
       - public_net
       - internal_net
     depends_on:
-      - mongodb
-      - redis
-      - blockchain
-      - setup
+      setup:
+        condition: service_completed_successfully
+      mongodb:
+        condition: service_started
+      redis:
+        condition: service_started
+      blockchain:
+        condition: service_started
     healthcheck:
       test: ["CMD", "curl", "-kf", "https://localhost:8443/health"]
       interval: 30s
@@ -85,8 +91,13 @@ services:
       - AI_HMAC_SECRET=${AI_HMAC_SECRET}
       - BLOCKCHAIN_RPC=${BLOCKCHAIN_RPC}
       - ACCESS_POLICY_ADDRESS=${ACCESS_POLICY_ADDRESS}
+    ports:
+      - "5001:5001"
     networks:
       - internal_net
+    depends_on:
+      blockchain:
+        condition: service_started
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:5001/health"]
       interval: 30s
@@ -95,8 +106,11 @@ services:
 
   blockchain:
     build: ./packages/contracts
+    ports:
+      - "8545:8545"
     networks:
       - internal_net
+      - public_net
     healthcheck:
       test: ["CMD", "nc", "-z", "localhost", "8545"]
       interval: 15s
@@ -105,6 +119,8 @@ services:
 
   mongodb:
     image: mongo:7.0
+    ports:
+      - "27020:27017"
     environment:
       - MONGO_INITDB_ROOT_USERNAME=${MONGO_ROOT_USER}
       - MONGO_INITDB_ROOT_PASSWORD=${MONGO_ROOT_PASSWORD}
@@ -120,6 +136,8 @@ services:
 
   redis:
     image: redis:7.2-alpine
+    ports:
+      - "6380:6379"
     command: ["redis-server", "--requirepass", "${REDIS_PASSWORD}"]
     networks:
       - internal_net

@@ -3,15 +3,19 @@ const fs = require("fs");
 const path = require("path");
 
 async function main() {
-  const [deployer, admin1, admin2, admin3, gateway] = await ethers.getSigners();
+  // deployer = Account #0 — private key 0xac0974... matches GATEWAY_PRIVATE_KEY in .env
+  // deployer is given ADMIN_ROLE + GATEWAY_ROLE so the gateway can call all contract functions
+  const [deployer, admin1, admin2] = await ethers.getSigners();
 
-  console.log("Deploying contracts with the account:", deployer.address);
+  console.log("Deploying contracts with account:", deployer.address);
 
   // 1. Deploy AccessPolicy
+  //    admins[0] = deployer (gets ADMIN_ROLE + DEFAULT_ADMIN_ROLE + GATEWAY_ROLE)
+  //    admins[1] = admin1, admins[2] = admin2 (get ADMIN_ROLE for real multi-sig)
   const AccessPolicy = await ethers.getContractFactory("AccessPolicy");
   const accessPolicy = await AccessPolicy.deploy(
-    [admin1.address, admin2.address, admin3.address],
-    gateway.address
+    [deployer.address, admin1.address, admin2.address],
+    deployer.address
   );
   await accessPolicy.waitForDeployment();
   const accessPolicyAddress = await accessPolicy.getAddress();
@@ -19,34 +23,32 @@ async function main() {
 
   // 2. Deploy AuditLedger
   const AuditLedger = await ethers.getContractFactory("AuditLedger");
-  const auditLedger = await AuditLedger.deploy(gateway.address);
+  const auditLedger = await AuditLedger.deploy(deployer.address);
   await auditLedger.waitForDeployment();
   const auditLedgerAddress = await auditLedger.getAddress();
   console.log("AuditLedger deployed to:", auditLedgerAddress);
 
-  // 3. Save addresses to .env.local for development use
-  const envContent = `
-ACCESS_POLICY_ADDRESS=${accessPolicyAddress}
+  // 3. Save addresses to .env.local
+  const envContent = `ACCESS_POLICY_ADDRESS=${accessPolicyAddress}
 AUDIT_LEDGER_ADDRESS=${auditLedgerAddress}
-GATEWAY_PRIVATE_KEY=${gateway.privateKey}
-`;
-  const envPath = path.join(__dirname, "../../../.env.local");
-  fs.writeFileSync(envPath, envContent.trim());
+GATEWAY_PRIVATE_KEY=${deployer.privateKey}`;
+  fs.writeFileSync(path.join(__dirname, "../../../.env.local"), envContent);
   console.log("Contract addresses saved to .env.local");
 
-  // Also save a JSON for reference
+  // 4. Save deployment summary
   const deploymentInfo = {
     network: "hardhat",
     accessPolicy: accessPolicyAddress,
     auditLedger: auditLedgerAddress,
-    gateway: gateway.address,
-    admins: [admin1.address, admin2.address, admin3.address],
+    gateway: deployer.address,
+    admins: [deployer.address, admin1.address, admin2.address],
     timestamp: new Date().toISOString()
   };
   fs.writeFileSync(
     path.join(__dirname, "../deployment.json"),
     JSON.stringify(deploymentInfo, null, 2)
   );
+  console.log("Deployment complete.");
 }
 
 main()

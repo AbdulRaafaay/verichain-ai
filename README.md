@@ -1,64 +1,230 @@
-# VeriChain AI — Blockchain-Secured AI Anomaly Detection
+# VeriChain AI
 
-VeriChain AI is a multi-layered security infrastructure designed to protect enterprise resources using Zero-Knowledge Proofs (ZKP), Behavioral AI, and Blockchain-anchored auditing.
+A Zero-Trust enterprise authentication platform combining Zero-Knowledge Proofs (ZKP), mutual TLS, AI-driven behavioral risk scoring, and blockchain-anchored audit trails. Built as a Secure Software Design project demonstrating defense-in-depth across all OWASP Top 10 and STRIDE threat categories.
+
+---
 
 ## Architecture
-1. **Desktop Agent**: Electron app for secure resource access via ZKP and mTLS.
-2. **Security Gateway (PEP)**: Node.js orchestrator enforcing mTLS, ZKP, and session policies.
-3. **AI Risk Engine**: Python microservice providing real-time behavioral anomaly detection.
-4. **Blockchain Layer**: Solidity contracts for session management and immutable log anchoring.
-5. **Trust Dashboard**: React interface for real-time security monitoring and tamper detection.
 
-## Prerequisites
-- Docker & Docker Compose
-- Node.js (v18+)
-- Python 3.11+
+```
+┌─────────────────────┐     mTLS + ZKP     ┌──────────────────────────┐
+│   Desktop Agent     │ ──────────────────► │   Security Gateway (PEP) │
+│  (Electron + React) │                     │   (Express + TypeScript) │
+└─────────────────────┘                     └────────────┬─────────────┘
+                                                         │
+                              ┌──────────────────────────┼────────────────────┐
+                              │                          │                    │
+                    ┌─────────▼────────┐   ┌────────────▼────────┐  ┌────────▼───────┐
+                    │   AI Risk Engine  │   │   MongoDB + Redis   │  │  Blockchain    │
+                    │   (Python/Flask)  │   │   (Audit + Sessions)│  │  (Hardhat/ETH) │
+                    └──────────────────┘   └─────────────────────┘  └────────────────┘
+                                                         │
+                                            ┌────────────▼────────────┐
+                                            │    Trust Dashboard      │
+                                            │   (React + Socket.io)   │
+                                            └─────────────────────────┘
+```
 
-## Quick Start
-1. **Install dependencies**:
-   ```bash
-   npm install
-   ```
+### Components
 
-2. **Generate Security Certificates (mTLS)**:
-   ```bash
-   ./scripts/generate-certs.sh
-   ```
+| Package | Description | Tech |
+|---|---|---|
+| `packages/desktop-agent` | Electron app — ZKP authentication client | Electron 28, React 18, Vite, TypeScript |
+| `packages/gateway` | Security Policy Enforcement Point | Express 4, TypeScript, mTLS, Zod, Redis |
+| `packages/ai-engine` | Behavioral risk scoring microservice | Python 3.11, Flask, scikit-learn (Isolation Forest) |
+| `packages/contracts` | On-chain session registry and access policy | Solidity 0.8.20, Hardhat, OpenZeppelin |
+| `packages/trust-dashboard` | Admin monitoring dashboard | React 18, CRA, Recharts, Socket.io |
 
-3. **Deploy Smart Contracts**:
-   ```bash
-   cd packages/contracts
-   npx hardhat node
-   # (In another terminal)
-   npx hardhat run scripts/deploy.js --network localhost
-   ```
-
-4. **Launch the Ecosystem**:
-   ```bash
-   docker-compose up --build
-   ```
+---
 
 ## Security Features
-- **NFR-03: mTLS Enforcement**: All traffic requires mutual TLS with hardware-backed certs.
-- **NFR-04: ZKP Authentication**: Authenticate without revealing private keys via Groth16.
-- **NFR-07: Behavioral Anomaly Detection**: Isolation Forest model scores session risk.
-- **NFR-13: Log Anchoring**: Audit logs are batched and anchored to Ethereum every 60s.
-- **NFR-09: Model Integrity**: AI Engine verifies its own hash against the blockchain at boot.
 
-## Demo Flow
-Follow these steps to experience the full VeriChain AI security lifecycle:
+| Feature | Implementation |
+|---|---|
+| **Zero-Knowledge Proof auth** | Groth16 circuit (BN128) via snarkjs — proves identity without revealing secrets |
+| **Mutual TLS (mTLS)** | All gateway traffic requires a valid client certificate signed by the internal CA |
+| **AI Risk Scoring** | Isolation Forest detects behavioral anomalies (access velocity, device mismatch) |
+| **Blockchain Audit Trail** | Every access decision is hashed into a Merkle tree and anchored to Ethereum |
+| **Multi-Sig Policy Changes** | Access policy updates require 2-of-3 admin signatures via `AccessPolicy.sol` |
+| **Nonce-based replay protection** | One-time nonces stored in Redis and burned on use |
+| **Rate limiting** | Redis-backed per-IP rate limiting on `/auth/nonce`, `/auth/login`, `/heartbeat` |
+| **Input validation** | Zod schema validation on all gateway endpoints |
+| **Session heartbeat watchdog** | Inactive sessions auto-revoked after TTL expires |
+| **Tamper detection** | Real-time Merkle root comparison — mismatches trigger `tamper_alert` via WebSocket |
 
-1. **Enrollment**: Launch the Desktop Agent. Click "Login with Zero-Knowledge". Since it's the first run, the Agent will generate a new identity and store it in your OS Secure Storage (TPM/Keychain).
-2. **Authentication**: The Agent generates a ZKP proof and authenticates via mTLS. You are redirected to the Dashboard.
-3. **Session Monitoring**: Open the Trust Dashboard at `http://localhost:3001`. You will see your new session appear in real-time with an initial low risk score.
-4. **Accessing Resources**: Use the Agent to access a protected "File Vault". An audit log will immediately appear in the Trust Dashboard and the Agent's Telemetry screen.
-5. **Simulating Anomaly**: Rapidly access resources multiple times in the Agent. The AI Risk Engine will detect high access velocity, increasing your risk score on the Dashboard.
-6. **Tamper Detection**: (Advanced) Manually modify an audit log entry in MongoDB. Within 60 seconds, the Merkle Anchoring service will detect the integrity mismatch and fire a `MERKLE_MISMATCH` critical alert on the Trust Dashboard.
-7. **Replay Protection**: Attempt to reuse a previous ZKP proof. The Gateway will reject it as the nonce has already been consumed in Redis.
+---
 
-## Testing
-To run the smart contract security suite:
+## Prerequisites
+
+- **Docker** ≥ 24 and **Docker Compose** ≥ 2.20
+- **Node.js** ≥ 18.0
+- **Python** ≥ 3.11
+- **Hardhat** (installed via npm)
+
+---
+
+## Quick Start (Docker)
+
+```bash
+# 1. Clone and enter the repo
+git clone <repo-url> && cd verichain-ai
+
+# 2. Copy env template and fill in values
+cp .env.example .env
+
+# 3. Generate TLS certificates (dev only)
+bash scripts/gen-certs.sh
+
+# 4. Start all services
+docker compose up --build
+
+# Services:
+#   Gateway      → https://localhost:8443
+#   Trust Dashboard → http://localhost:3001
+#   AI Engine    → http://localhost:5001 (internal)
+#   MongoDB      → localhost:27017 (internal)
+#   Redis        → localhost:6379 (internal)
+```
+
+---
+
+## Manual Development Setup
+
+### 1. Install root dependencies
+```bash
+npm install
+```
+
+### 2. Security Gateway
+```bash
+cd packages/gateway
+npm install
+cp .env.example .env   # fill in MONGODB_URI, REDIS_URL, etc.
+npm run dev
+```
+
+### 3. Desktop Agent
+```bash
+cd packages/desktop-agent
+npm install
+npm run dev            # starts Vite dev server on :3000 + Electron
+```
+
+### 4. Trust Dashboard
+```bash
+cd packages/trust-dashboard
+npm install
+npm start              # CRA dev server on :3001
+```
+
+### 5. AI Risk Engine
+```bash
+cd packages/ai-engine
+pip install -r requirements.txt
+python app.py
+```
+
+### 6. Blockchain (local Hardhat node)
 ```bash
 cd packages/contracts
-npx hardhat test
+npm install
+npx hardhat node       # starts local chain on :8545
+npx hardhat run scripts/deploy.js --network localhost
 ```
+
+---
+
+## Environment Variables
+
+| Variable | Default | Description |
+|---|---|---|
+| `GATEWAY_PORT` | `8443` | HTTPS port for the gateway |
+| `MONGODB_URI` | `mongodb://mongodb:27017/verichain` | MongoDB connection string |
+| `REDIS_URL` | `redis://redis:6379` | Redis connection URL |
+| `BLOCKCHAIN_RPC` | `http://localhost:8545` | JSON-RPC endpoint for Hardhat/Ethereum |
+| `GATEWAY_KEY_PATH` | `./certs/gateway.key` | Path to gateway private key |
+| `GATEWAY_CERT_PATH` | `./certs/gateway.crt` | Path to gateway certificate |
+| `CA_CERT_PATH` | `./certs/ca.crt` | Path to CA certificate (for mTLS) |
+| `TRUST_DASHBOARD_ORIGIN` | `http://localhost:3001` | Allowed CORS origin for Socket.io |
+| `AI_ENGINE_URL` | `http://ai-engine:5001` | Internal AI microservice URL |
+| `HMAC_SECRET` | — | Shared secret for AI engine request signing |
+| `REACT_APP_GATEWAY_URL` | `https://localhost:8443` | Gateway URL used by frontends |
+
+---
+
+## API Reference
+
+### Authentication (Sequence 1)
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/api/auth/nonce` | Request a one-time nonce (`?clientId=<id>`) |
+| `POST` | `/api/auth/login` | Submit ZKP proof and receive a session ID |
+
+### Resource Access (Sequence 2)
+
+| Method | Path | Description |
+|---|---|---|
+| `POST` | `/api/resource/access` | Request access to a protected resource |
+
+### Session Heartbeat (Sequence 3)
+
+| Method | Path | Description |
+|---|---|---|
+| `POST` | `/api/heartbeat` | Keepalive ping — updates session TTL |
+
+### Admin
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/api/admin/overview` | List all active sessions |
+| `POST` | `/api/admin/revoke` | Revoke a session by ID |
+| `GET` | `/api/admin/audit-logs` | Fetch audit log entries |
+| `GET` | `/api/admin/pending-policies` | List pending multi-sig proposals |
+| `POST` | `/api/admin/propose-policy` | Propose a GRANT/REVOKE policy change |
+| `POST` | `/api/admin/approve` | Sign and approve a pending proposal |
+
+---
+
+## Testing
+
+```bash
+# Smart contract tests
+cd packages/contracts && npx hardhat test
+
+# Gateway type-check
+cd packages/gateway && npm run build
+
+# Desktop agent type-check
+cd packages/desktop-agent && npx tsc --noEmit
+```
+
+---
+
+## Project Structure
+
+```
+verichain-ai/
+├── packages/
+│   ├── desktop-agent/          Electron + React client
+│   │   ├── src/main/           Main process (IPC, mTLS, ZKP)
+│   │   └── src/renderer/       React UI (Vite)
+│   ├── gateway/                Express security gateway
+│   │   ├── src/controllers/    Route handlers
+│   │   ├── src/middleware/     mTLS, validation, rate limiting
+│   │   ├── src/services/       Redis, blockchain, AI, session, audit
+│   │   └── src/routes/         API router with Zod schemas
+│   ├── ai-engine/              Python Flask risk scoring
+│   ├── contracts/              Solidity smart contracts + Hardhat
+│   └── trust-dashboard/        React admin dashboard
+├── nginx/                      Reverse proxy config
+├── docker-compose.yml          Production compose
+├── docker-compose.dev.yml      Development compose
+└── .github/workflows/          CI/CD pipeline
+```
+
+---
+
+## License
+
+Academic project — Secure Software Design, Semester 6.

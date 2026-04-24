@@ -82,12 +82,19 @@ export class SessionService {
         logger.warn(`Session revoked: ${sessionId} | Reason: ${reason}`);
     }
 
+    static async updateRiskScore(sessionId: string, riskScore: number): Promise<void> {
+        const session = await this.getSession(sessionId);
+        if (!session) return;
+        session.riskScore = riskScore;
+        await redisClient.setEx(`session:${sessionId}`, this.SESSION_TTL, JSON.stringify(session));
+    }
+
     static async getAllSessions(): Promise<any[]> {
         const keys = await redisClient.keys('session:*');
-        const sessions = await Promise.all(keys.map(async (key) => {
+        const sessions = await Promise.all(keys.map(async (key: string) => {
             const data = await redisClient.get(key);
             return data ? JSON.parse(data) : null;
         }));
-        return sessions.filter(s => s !== null);
+        return sessions.filter((s: any) => s !== null);
     }
 }

@@ -9,7 +9,8 @@ const ACCESS_POLICY_ABI = [
     "function registeredModelHash() external view returns (bytes32)",
     "event AccessDecision(bytes32 indexed userHash, bytes32 indexed resourceHash, bool allowed, uint256 timestamp)",
     "event SessionCreated(bytes32 indexed sessionId, bytes32 indexed userHash, uint256 timestamp)",
-    "event SessionRevoked(bytes32 indexed sessionId, string reason, uint256 timestamp)"
+    "event SessionRevoked(bytes32 indexed sessionId, string reason, uint256 timestamp)",
+    "event AlertTriggered(string alertType, bytes32 data, uint256 timestamp)"
 ];
 
 const AUDIT_LEDGER_ABI = [
@@ -19,7 +20,7 @@ const AUDIT_LEDGER_ABI = [
 ];
 
 export class BlockchainService {
-    private static provider: ethers.JsonRpcProvider;
+    public static provider: ethers.JsonRpcProvider;
     private static wallet: ethers.Wallet;
     public static accessPolicy: ethers.Contract;
     public static auditLedger: ethers.Contract;
@@ -65,5 +66,60 @@ export class BlockchainService {
             logger.error('Blockchain Session Creation Failed', { error: (err as Error).message });
             throw err;
         }
+    }
+
+    /** Fetch all past events from both contracts and return in unified format. */
+    static async getPastEvents(): Promise<any[]> {
+        const events: any[] = [];
+
+        try {
+            const toEntry = (ev: any, name: string) => ({
+                id:          (ev.transactionHash || '') + (ev.index ?? ev.logIndex ?? Math.random()),
+                event:       name,
+                txHash:      ev.transactionHash,
+                blockNumber: ev.blockNumber,
+                timestamp:   new Date().toISOString(), // will be enriched below
+                details:     ev.args ? Object.fromEntries(
+                    Object.entries(ev.args).filter(([k]) => isNaN(Number(k)))
+                ) : {},
+            });
+
+            const [sessionCreated, sessionRevoked, accessDecision, alertTriggered, merkleAnchored] = await Promise.all([
+                this.accessPolicy.queryFilter(this.accessPolicy.filters.SessionCreated()).catch(() => []),
+                this.accessPolicy.queryFilter(this.accessPolicy.filters.SessionRevoked()).catch(() => []),
+                this.accessPolicy.queryFilter(this.accessPolicy.filters.AccessDecision()).catch(() => []),
+                this.accessPolicy.queryFilter(this.accessPolicy.filters.AlertTriggered()).catch(() => []),
+                this.auditLedger.queryFilter(this.auditLedger.filters.MerkleRootAnchored()).catch(() => []),
+            ]);
+
+            // Enrich with block timestamps in parallel
+            const allRaw = [
+                ...sessionCreated.map((e: any)  => toEntry(e, 'SessionCreated')),
+                ...sessionRevoked.map((e: any)   => toEntry(e, 'SessionRevoked')),
+                ...accessDecision.map((e: any)   => toEntry(e, 'AccessDecision')),
+                ...alertTriggered.map((e: any)   => toEntry(e, 'AlertTriggered')),
+                ...merkleAnchored.map((e: any)   => toEntry(e, 'MerkleRootAnchored')),
+            ];
+
+            const blockNums = [...new Set(allRaw.map(e => e.blockNumber))];
+            const blockTimes: Record<number, string> = {};
+            await Promise.all(blockNums.map(async bn => {
+                try {
+                    const block = await this.provider.getBlock(bn);
+                    if (block) blockTimes[bn] = new Date(Number(block.timestamp) * 1000).toISOString();
+                } catch { /* skip */ }
+            }));
+
+            for (const e of allRaw) {
+                if (blockTimes[e.blockNumber]) e.timestamp = blockTimes[e.blockNumber];
+                events.push(e);
+            }
+
+            events.sort((a, b) => b.blockNumber - a.blockNumber);
+        } catch (err) {
+            logger.error('getPastEvents failed', { error: (err as Error).message });
+        }
+
+        return events;
     }
 }

@@ -1,5 +1,5 @@
 import redisClient from './redisClient';
-import { logger } from '../utils/logger';
+import crypto from 'crypto';
 
 /**
  * NonceService handles one-time-use tokens to prevent replay attacks (Sequence 1).
@@ -9,7 +9,8 @@ export class NonceService {
     private static TTL = 300; // 5 minutes
 
     static async generateNonce(clientId: string): Promise<string> {
-        const nonce = Math.random().toString(36).substring(2, 15);
+        // 16 bytes of CSPRNG → 32-char hex string parseable by Desktop Agent
+        const nonce = crypto.randomBytes(16).toString('hex');
         await redisClient.setEx(`nonce:${clientId}:${nonce}`, this.TTL, '1');
         return nonce;
     }
