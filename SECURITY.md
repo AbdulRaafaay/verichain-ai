@@ -184,6 +184,34 @@ The expected hash is provided at container launch via the `MODEL_HASH` environme
 
 ---
 
+## 🛡️ Defensive Programming & Implementation Controls
+
+### Input Validation Strategy
+VeriChain AI implements a strict "White-List" validation strategy at every trust boundary:
+- **Server-Side Validation**: Every incoming request to the Gateway is validated against **Zod Schemas** (`packages/gateway/src/middleware/validate.ts`).
+- **Type Safety**: TypeScript is used throughout the Gateway and Agent to prevent type-confusion attacks.
+- **Fail-Closed Logic**: If the AI Engine is unreachable or the Blockchain query fails, the system defaults to `DENY` (Access Denied). No request is granted without explicit cryptographic and behavioral verification.
+
+### Secure Error Handling
+To prevent **Information Disclosure** (STRIDE), VeriChain AI uses a centralized error-handling strategy:
+- **Generic Responses**: External API consumers receive generic error messages (e.g., `Internal Server Error` or `Access Denied: Security Service Unreachable`).
+- **No Stack Traces**: Stack traces and internal database/service errors are strictly logged to internal logs (`winston`) and never exposed to the client.
+- **Log Integrity**: Internal logs are structured and do not contain sensitive user data (like session IDs or keys).
+
+### Injection Protection
+- **No Raw SQL**: All database interactions use **Mongoose ODM** or **Redis Client**, which naturally parameterize inputs to prevent NoSQL/SQL Injection.
+- **Blockchain Parametrization**: Smart contract calls use the **ethers.js** library, ensuring all parameters are correctly encoded for the EVM.
+- **XSS/CSRF**: The Trust Dashboard and Agent Renderer use **React**, which provides built-in XSS protection via automatic output escaping.
+
+---
+
+## ☁️ Cloud Security & Environment Management
+- **Environment Isolation**: Sensitive configurations (Private Keys, DB URIs, RPC endpoints) are managed via `.env` files and never hardcoded in source code.
+- **Secrets Management**: In a production cloud deployment (e.g., AWS/Azure), these would be mapped to **AWS Secrets Manager** or **Azure Key Vault**.
+- **Least Privilege**: Each microservice runs in its own isolated Docker container with specific port mappings, minimizing the lateral attack surface.
+
+---
+
 ## STRIDE Threat Mitigations Summary
 
 | Threat | Mitigation |

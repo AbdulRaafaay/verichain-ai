@@ -1,6 +1,21 @@
 # VeriChain AI
+**Secure Software Design — Spring 2026**  
+**Assignment 3: Secure Implementation & Code Submission**
 
-A Zero-Trust enterprise authentication platform combining Zero-Knowledge Proofs (ZKP), mutual TLS, AI-driven behavioral risk scoring, and blockchain-anchored audit trails. Built as a Secure Software Design project demonstrating defense-in-depth across all OWASP Top 10 and STRIDE threat categories.
+VeriChain AI is a zero-trust enterprise authentication platform that integrates Zero-Knowledge Proofs (ZKP), mutual TLS, AI-driven behavioral risk scoring, and blockchain-anchored audit trails. This project demonstrates a production-grade secure implementation based on the UMLsec designs from Deliverable 2, applying defensive programming and modular architecture.
+
+---
+
+## 🚀 Quick Start (One-Command Boot)
+
+The easiest way to start the entire ecosystem (Gateway, Dashboard, AI Engine, Blockchain, and Agent) is using the Universal Orchestrator:
+
+```powershell
+# Start the entire ecosystem
+powershell -File start-all.ps1
+```
+
+*This script handles certificate generation, Docker container orchestration, and launching the Desktop Agent automatically.*
 
 ---
 
@@ -24,6 +39,15 @@ A Zero-Trust enterprise authentication platform combining Zero-Knowledge Proofs 
                                             │   (React + Socket.io)   │
                                             └─────────────────────────┘
 ```
+
+### 🛠 Modular Architecture & Design
+
+VeriChain AI follows a **Separation of Concerns (SoC)** principle across its modular packages:
+- **`packages/gateway`**: The **Policy Enforcement Point (PEP)**. Handles mTLS, validation, and coordination.
+- **`packages/ai-engine`**: The **Risk Engine**. Isolated Python service for ML-based anomaly detection.
+- **`packages/contracts`**: The **Root of Trust**. Solidity contracts for immutable policy and audit anchoring.
+- **`packages/desktop-agent`**: The **Prover**. Secure Electron client for ZKP and telemetry.
+- **`packages/trust-dashboard`**: The **Auditor**. Real-time administrative monitoring.
 
 ### Components
 

@@ -1,3 +1,15 @@
+/**
+ * blockchain.service.ts
+ * 
+ * Purpose: Provides high-level abstractions for interacting with the Ethereum/Hardhat blockchain.
+ * Handles identity anchoring, access policy verification, and event streaming.
+ * 
+ * Security Controls (NFR-03, NFR-05):
+ * - Fail-Closed Logic: Denies access if the blockchain is unreachable.
+ * - Integrity: Every session and policy change is anchored to the chain.
+ * - Auditability: Fetches immutable on-chain events for the Trust Dashboard.
+ */
+
 import { ethers } from 'ethers';
 import { logger } from '../utils/logger';
 
@@ -25,6 +37,10 @@ export class BlockchainService {
     public static accessPolicy: ethers.Contract;
     public static auditLedger: ethers.Contract;
 
+    /**
+     * Initializes the blockchain provider and contract instances.
+     * @throws Error if required environment variables (PRIVATE_KEY, ADDRESSES) are missing.
+     */
     static async init() {
         const rpcUrl = process.env.BLOCKCHAIN_RPC || 'http://blockchain:8545';
         const accessPolicyAddress = process.env.ACCESS_POLICY_ADDRESS;
@@ -48,6 +64,12 @@ export class BlockchainService {
         });
     }
 
+    /**
+     * Checks if a user is allowed to access a resource based on on-chain policy.
+     * @param userHash - The SHA256 hash of the client's public identity.
+     * @param resourceHash - The identifier for the protected file/resource.
+     * @returns boolean - True if access is explicitly granted, False otherwise (Fail-Closed).
+     */
     static async checkAccess(userHash: string, resourceHash: string): Promise<boolean> {
         try {
             return await this.accessPolicy.checkAccess(`0x${userHash}`, `0x${resourceHash}`);
@@ -57,6 +79,11 @@ export class BlockchainService {
         }
     }
 
+    /**
+     * Anchors a new session ID to the blockchain for non-repudiation.
+     * @param sessionIdHash - Unique session identifier.
+     * @param userHash - User identity hash.
+     */
     static async createSession(sessionIdHash: string, userHash: string) {
         try {
             const tx = await this.accessPolicy.createSession(`0x${sessionIdHash}`, `0x${userHash}`);
@@ -68,7 +95,11 @@ export class BlockchainService {
         }
     }
 
-    /** Fetch all past events from both contracts and return in unified format. */
+    /**
+     * Aggregates and normalizes past events from all relevant smart contracts.
+     * Performs timestamp enrichment by querying block data in parallel.
+     * @returns Promise<any[]> - Sorted list of event objects for the Trust Dashboard.
+     */
     static async getPastEvents(): Promise<any[]> {
         const events: any[] = [];
 

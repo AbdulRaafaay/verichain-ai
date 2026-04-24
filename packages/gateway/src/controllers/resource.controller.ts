@@ -92,22 +92,24 @@ export class ResourceController {
                 resourceHash, riskScore, decision,
             });
 
+            // Update session currentResource for Dashboard visibility
+            await SessionService.updateCurrentResource(sessionId, resourceId);
+
             // Emit blockchain event for real-time Blockchain tab
             try {
                 const io = getIO();
                 io.emit('blockchain_event', {
-                    id:          sessionId + Date.now(),
-                    event:       'AccessDecision',
-                    txHash:      '0x' + resourceHash,
-                    blockNumber: 0,
+                    name:        'AccessDecision',
+                    tx:          '0x' + resourceHash,
+                    block:       0,
+                    args:        { user: userHash, resource: resourceId, risk: riskScore },
                     timestamp:   new Date().toISOString(),
-                    details:     { allowed: true, riskScore, decision },
                 });
             } catch { /* socket not ready */ }
 
             await ResourceController.broadcastState(req);
 
-            res.json({ success: true, riskScore, accessGranted: true, decision });
+            res.json({ success: true, riskScore, accessGranted: true, decision, resourceId });
         } catch (err) {
             logger.error('Resource Access Error', { error: (err as Error).message });
             res.status(500).json({ error: 'Access Denied: Security Service Unreachable' });

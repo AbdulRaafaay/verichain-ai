@@ -56,16 +56,24 @@ const App: React.FC = () => {
         if (el?.auth) {
             el.auth.isEnrolled().then(setIsEnrolled);
         }
-        if (el?.system) {
-            el.system.getStatus().then(setStatus);
-            el.system.getTelemetry().then(setTelemetry);
-        }
+        
+        const fetchStatus = () => {
+            if (el?.system) {
+                el.system.getStatus().then(setStatus);
+                el.system.getTelemetry().then(setTelemetry);
+            }
+        };
+
+        fetchStatus();
+        const interval = setInterval(fetchStatus, 3000);
 
         el?.onSessionRevoked?.(() => {
             setSessionId('');
             setAuthStep('idle');
             setCurrentScreen('WELCOME');
         });
+
+        return () => clearInterval(interval);
     }, []);
 
     const handleEnroll = async () => {
@@ -393,14 +401,14 @@ const App: React.FC = () => {
 
     const renderStatus = () => {
         const items = [
-            { key: 'Security Gateway',       val: status?.gateway    ?? '…', ok: status?.gateway?.includes('Active') },
-            { key: 'mTLS Cert Pinning',      val: status?.pinned     ?? '…', ok: status?.pinned !== 'Unreachable' },
-            { key: 'Zero-Knowledge Service', val: status?.zkp        ?? '…', ok: !!status?.zkp },
-            { key: 'AI Risk Engine',         val: status?.aiEngine   ?? '…', ok: status?.aiEngine === 'Operational' },
-            { key: 'Blockchain Network',     val: status?.blockchain ?? '…', ok: status?.blockchain?.includes('Block') || status?.blockchain === 'Connected' },
-            { key: 'Audit Service',          val: status?.audit      ?? '…', ok: status?.audit?.includes('Running') || status?.audit?.includes('logs') },
-            { key: 'Secure Storage',         val: status?.storage    ?? '…', ok: status?.storage === 'Connected' },
-            { key: 'Heartbeat Service',      val: status?.heartbeat  ?? '…', ok: status?.heartbeat === 'Active' },
+            { key: 'Security Gateway',       val: status?.gateway    ?? 'Connecting...', ok: status?.gateway === 'Connected' || status?.gateway?.includes('Active') },
+            { key: 'mTLS Cert Pinning',      val: status?.pinned     ?? 'Checking...',   ok: status?.pinned === 'Enabled' },
+            { key: 'Zero-Knowledge Service', val: status?.zkp        ?? 'Initialising...', ok: status?.zkp?.includes('Operational') },
+            { key: 'AI Risk Engine',         val: status?.ai         ?? 'Warming up...', ok: status?.ai === 'Operational' },
+            { key: 'Blockchain Network',     val: status?.blockchain ?? 'Syncing...',    ok: status?.blockchain === 'Connected' || status?.blockchain?.includes('Block') },
+            { key: 'Audit Service',          val: status?.audit      ?? 'Starting...',   ok: status?.audit === 'Running' || status?.audit?.includes('logs') },
+            { key: 'Secure Storage',         val: status?.storage    ?? 'Verifying...',  ok: status?.storage === 'Healthy' || status?.storage === 'Connected' },
+            { key: 'Heartbeat Service',      val: status?.heartbeat  ?? 'Idle',          ok: status?.heartbeat === 'Running' || status?.heartbeat === 'Active' },
         ];
         const allGreen = items.filter(i => i.ok).length;
 

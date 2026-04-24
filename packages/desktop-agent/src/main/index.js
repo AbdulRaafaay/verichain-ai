@@ -9,21 +9,23 @@ const winston = require('winston');
 const { io } = require('socket.io-client');
 const https = require('https');
 const fs = require('fs');
+const startTime = Date.now();
 
 const certPath = path.join(__dirname, '../../../../certs');
 
 // Lazy cert loading: Desktop Agent can start even if certs haven't been generated yet.
 // mTLS client cert is only required for /api/resource/access (gateway enforces this).
 function createHttpsAgent() {
+    const isDev = process.env.NODE_ENV !== 'production';
     try {
         return new https.Agent({
-            rejectUnauthorized: true,
+            rejectUnauthorized: !isDev, // Disable for dev/self-signed certs
             cert: fs.readFileSync(path.join(certPath, 'client.crt')),
             key: fs.readFileSync(path.join(certPath, 'client.key')),
             ca: fs.readFileSync(path.join(certPath, 'ca.crt'))
         });
     } catch {
-        logger.warn('mTLS client certs not found — using basic HTTPS agent (run scripts/docker-setup-certs.sh to generate)');
+        logger.warn('mTLS client certs not found — using basic HTTPS agent');
         return new https.Agent({ rejectUnauthorized: false });
     }
 }
@@ -247,24 +249,40 @@ ipcMain.handle('system:get-status', async () => {
     const httpsAgent = getHttpsAgent();
     const gatewayUrl = process.env.REACT_APP_GATEWAY_URL || 'https://localhost:8443';
 
-    const check = async (fn) => { try { return await fn(); } catch { return null; } };
+    const check = async (fn) => { 
+        try { 
+            const r = await fn(); 
+            return r.data; 
+        } catch (err) { 
+            logger.error('Status check failed', { url: gatewayUrl, error: err.message });
+            return null; 
+        } 
+    };
 
-    const [gatewayHealth, sysStatus] = await Promise.all([
-        check(() => axios.get(`${gatewayUrl}/health`, { httpsAgent, timeout: 3000 })),
-        check(() => axios.get(`${gatewayUrl}/api/admin/system-status`, { httpsAgent, timeout: 4000 })),
-    ]);
+    const s = await check(() => axios.get(`${gatewayUrl}/api/admin/system-status`, { httpsAgent, timeout: 3000 }));
+    
+    const uptimeSec = Math.floor((Date.now() - startTime) / 1000);
+    const uptimeStr = uptimeSec > 60 ? `${Math.floor(uptimeSec / 60)}m ${uptimeSec % 60}s` : `${uptimeSec}s`;
 
-    const s = sysStatus?.data || {};
+    if (!s) {
+        // Fallback: check basic health if detailed status fails
+        const health = await check(() => axios.get(`${gatewayUrl}/health`, { httpsAgent, timeout: 2000 }));
+        return {
+            gateway: health ? 'Active (mTLS)' : 'Unreachable',
+            pinned:  'Error',
+            zkp:     'Unknown',
+            ai:      'Unknown',
+            blockchain: 'Disconnected',
+            audit:   'Offline',
+            storage: 'Unknown',
+            heartbeat: 'Inactive',
+            uptime: uptimeStr
+        };
+    }
+
     return {
-        gateway:    gatewayHealth ? 'Active (mTLS)' : 'Unreachable',
-        pinned:     PINNED_FINGERPRINT ? 'Enabled' : 'Dev Mode',
-        zkp:        s.zkp        || 'Operational',
-        aiEngine:   s.aiEngine   || (gatewayHealth ? 'Connected' : 'Unknown'),
-        blockchain: s.blockchain || (gatewayHealth ? 'Connected' : 'Unknown'),
-        audit:      s.audit      || (gatewayHealth ? 'Running'   : 'Unknown'),
-        storage:    s.storage    || (gatewayHealth ? 'Healthy'   : 'Unknown'),
-        heartbeat:  global.__vcSessionId ? 'Active' : 'Idle',
-        uptime:     process.uptime().toFixed(0) + 's',
+        ...s,
+        uptime: uptimeStr
     };
 });
 

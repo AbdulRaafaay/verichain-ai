@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import axios from 'axios';
+import DetailModal from '../components/DetailModal';
 
 interface AuditLog {
     _id: string;
@@ -11,12 +12,14 @@ interface AuditLog {
     decision: string;
     anchored: boolean;
     merkleRoot: string;
+    metadata?: any;
 }
 
 const AuditLogs: React.FC = () => {
     const [logs, setLogs]       = useState<AuditLog[]>([]);
     const [loading, setLoading] = useState(true);
     const [filter, setFilter]   = useState('');
+    const [selected, setSelected] = useState<AuditLog | null>(null);
     const gatewayUrl = process.env.REACT_APP_GATEWAY_URL || 'https://localhost:8443';
 
     useEffect(() => {
@@ -78,11 +81,12 @@ const AuditLogs: React.FC = () => {
                                 <th>Risk</th>
                                 <th>Decision</th>
                                 <th>Integrity</th>
+                                <th>Actions</th>
                             </tr>
                         </thead>
                         <tbody>
                             {filtered.map(log => (
-                                <tr key={log._id}>
+                                <tr key={log._id} onClick={() => setSelected(log)} style={{ cursor: 'pointer' }}>
                                     <td style={{ color: 'var(--text-muted)', fontSize: '0.8rem', whiteSpace: 'nowrap' }}>
                                         {new Date(log.timestamp).toLocaleString()}
                                     </td>
@@ -98,7 +102,7 @@ const AuditLogs: React.FC = () => {
                                     </td>
                                     <td>
                                         <span className={`badge ${(log.riskScore ?? 0) > 75 ? 'badge-red' : (log.riskScore ?? 0) > 49 ? 'badge-yellow' : 'badge-green'}`}>
-                                            {log.riskScore ?? '—'}
+                                            {Math.round(log.riskScore ?? 0)}
                                         </span>
                                     </td>
                                     <td style={{ fontWeight: 500 }}>{log.decision || '—'}</td>
@@ -109,11 +113,34 @@ const AuditLogs: React.FC = () => {
                                             <span className="badge badge-gray">Pending</span>
                                         )}
                                     </td>
+                                    <td>
+                                        <button className="btn-ghost" style={{ fontSize: '0.75rem' }}>View Details</button>
+                                    </td>
                                 </tr>
                             ))}
                         </tbody>
                     </table>
                 </div>
+            )}
+
+            {selected && (
+                <DetailModal
+                    isOpen={!!selected}
+                    onClose={() => setSelected(null)}
+                    title="Audit Log Detail"
+                    data={{
+                        'Event ID': selected._id,
+                        'Timestamp': selected.timestamp,
+                        'Action': selected.eventType,
+                        'User Hash': selected.userHash,
+                        'Resource Hash': selected.resourceHash,
+                        'Risk Score': selected.riskScore,
+                        'Decision': selected.decision,
+                        'Anchored': selected.anchored ? 'YES' : 'NO',
+                        'Merkle Root': selected.merkleRoot || 'Not yet anchored',
+                        ...selected.metadata
+                    }}
+                />
             )}
         </div>
     );

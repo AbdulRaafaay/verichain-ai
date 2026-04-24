@@ -99,24 +99,23 @@ class RiskEngine:
             X_scaled = self.scaler.transform(X)
             # decision_function: negative = anomalous, positive = normal
             # Typical range is [-0.15, 0.15] for normal samples in IF
-            raw_score = self.model.decision_function(X_scaled)[0]
+            raw_val = float(self.model.decision_function(X_scaled)[0])
             
-            # Map raw_score to 0-100 using a non-linear sigmoid-like approach
-            # We want 0 for very normal (>0.1), ~50 for the threshold (~0), and 100 for very anomalous (<-0.1)
-            # risk = 100 / (1 + exp(k * (score - offset)))
-            # A simpler way:
-            if raw_score > 0.12:
-                risk_score = np.random.randint(0, 8) # Very safe
-            elif raw_score > 0:
-                # Map 0 to 0.12 -> 45 to 8
-                risk_score = int(45 - (raw_score / 0.12) * 37)
-            elif raw_score > -0.1:
-                # Map -0.1 to 0 -> 90 to 45
-                risk_score = int(90 - ((raw_score + 0.1) / 0.1) * 45)
+            # Map raw_val to 0-100 using a non-linear sigmoid-like approach
+            if raw_val > 0.12:
+                # Very safe behavior — baseline noise
+                res_score = 5 + np.random.normal(0, 2)
+            elif raw_val > 0:
+                # Normal-ish but trending anomalous (Map 0 to 0.12 -> 45 to 8)
+                res_score = (45 - (raw_val / 0.12) * 37) + np.random.normal(0, 2)
+            elif raw_val > -0.1:
+                # Anomalous (Map -0.1 to 0 -> 90 to 45)
+                res_score = (90 - ((raw_val + 0.1) / 0.1) * 45) + np.random.normal(0, 3)
             else:
-                risk_score = np.random.randint(92, 101) # Very anomalous
+                # Critical anomaly
+                res_score = 95 + np.random.normal(0, 2)
 
-            return int(np.clip(risk_score, 0, 100))
+            return int(np.clip(res_score, 0, 100))
         except Exception as e:
             logger.error(f"Scoring exception: {e} — fail-closed, returning 100")
             return 100

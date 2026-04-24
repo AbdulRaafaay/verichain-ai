@@ -89,6 +89,13 @@ export class SessionService {
         await redisClient.setEx(`session:${sessionId}`, this.SESSION_TTL, JSON.stringify(session));
     }
 
+    static async updateCurrentResource(sessionId: string, resourceId: string): Promise<void> {
+        const session = await this.getSession(sessionId);
+        if (!session) return;
+        session.currentResource = resourceId;
+        await redisClient.setEx(`session:${sessionId}`, this.SESSION_TTL, JSON.stringify(session));
+    }
+
     static async getAllSessions(): Promise<any[]> {
         const keys = await redisClient.keys('session:*');
         const sessions = await Promise.all(keys.map(async (key: string) => {
