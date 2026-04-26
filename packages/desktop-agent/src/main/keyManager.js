@@ -20,7 +20,9 @@ function checkEncryptionAvailable() {
 
 async function enrollUser() {
     checkEncryptionAvailable();
-    const privateKey = crypto.randomBytes(32);
+    // 31 bytes (248 bits) keeps the value below the BN128 scalar field (~254 bits)
+    // preventing arithmetic overflow inside the Groth16/Poseidon circuit.
+    const privateKey = crypto.randomBytes(31);
 
     try {
         const publicKey = crypto.createHash('sha256').update(privateKey).digest('hex');

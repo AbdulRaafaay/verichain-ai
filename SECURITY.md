@@ -10,7 +10,7 @@ VeriChain AI uses a **multi-factor, zero-knowledge authentication** model. No pa
 
 ### Sequence 1 — Zero-Knowledge Proof Login
 
-1. **Nonce Request** — The Desktop Agent calls `GET /api/auth/nonce?clientId=<id>`. The gateway generates a 32-byte cryptographically random nonce (`crypto.randomBytes(32).toString('hex')`), stores it in Redis with a 5-minute TTL keyed to `nonce:<clientId>:<nonce>`, and returns it. The TTL prevents stale nonce accumulation.
+1. **Nonce Request** — The Desktop Agent calls `GET /api/auth/nonce?clientId=<id>`. The gateway generates a 16-byte cryptographically random nonce (`crypto.randomBytes(16).toString('hex')`), stores it in Redis with a 5-minute TTL keyed to `nonce:<clientId>:<nonce>`, and returns it. The TTL prevents stale nonce accumulation and any reuse of the same nonce returns 401.
 
 2. **Proof Generation** — The Desktop Agent uses snarkjs (Groth16/BN128 circuit) to generate a zero-knowledge proof that it possesses the private key corresponding to its enrolled identity. The nonce is embedded into the circuit's public input vector — the proof is cryptographically bound to that specific nonce and cannot be replayed for a different request.
 
@@ -36,30 +36,38 @@ On every `POST /api/resource/access`:
 
 1. The gateway calls the AI Risk Engine at `POST /score`, authenticated via **HMAC-SHA256**: `X-HMAC-Signature = HMAC(body, HMAC_SECRET)`. The engine validates the signature before processing — requests with invalid signatures are rejected.
 
-2. The Python microservice runs **Isolation Forest** on four behavioral telemetry features:
-   - `accessVelocity` — requests per minute
-   - `contextDrift` — environment consistency score
-   - `requestFrequency` — requests per session
-   - `timeOfDayScore` — expected working-hours score
+2. The Python microservice runs **Isolation Forest** on six behavioral telemetry features:
+   - `accessVelocity` — requests per minute (normal ~5)
+   - `uniqueResources` — distinct resources per session (normal 1–10)
+   - `downloadBytes` — bytes transferred (normal ~50,000)
+   - `geoDistanceKm` — distance from baseline location (normal ~0)
+   - `timeSinceLast` — seconds since previous request (normal ~300)
+   - `deviceIdMatch` — 1 if device matches enrolled, 0 otherwise
+
+   Scores are dynamically calibrated using `df_min`/`df_max` from the actual training distribution so the full 0–100 range is used. The scoring formula: `score = clip((1 − (raw − df_min) / (df_max − df_min)) × 100, 0, 100)`.
 
 3. The engine returns a risk score (0–100). The gateway enforces:
-   - Score > 75 → **REVOKE**: session deleted from Redis, `session_revoked` WebSocket event broadcast
+   - Score > 75 → **REVOKE**: session deleted from Redis, on-chain `revokeSession` called, `session_revoked` WebSocket event broadcast
    - Score 50–75 → **STEP_UP**: access denied, step-up re-authentication required
    - Score < 50 → **PERMIT**: access granted
 
-4. If the AI Engine is unreachable, the system **fails closed**: access is denied and the error is logged. No request is ever granted without an explicit risk assessment.
+4. If the AI Engine is unreachable, the system **fails closed**: score defaults to 100 (REVOKE). No request is ever granted without an explicit risk assessment.
 
 **STRIDE coverage:** Elevation of Privilege (anomaly detection blocks compromised sessions), Denial of Service (watchdog revokes stale sessions).
 
 ### 2.3 Blockchain Policy Check
 
-After the risk check, the gateway queries `AccessPolicy.sol`:
+After the risk check, the gateway queries `AccessPolicy.sol` via a gas-free `view` call:
 
 ```solidity
-function checkAccess(bytes32 userHash, bytes32 resourceHash) external view returns (bool)
+function isAccessAllowed(bytes32 userHash, bytes32 resourceHash)
+    external view returns (bool)
+{
+    return accessRules[userHash][resourceHash];
+}
 ```
 
-If the on-chain policy does not explicitly grant the user access to the requested resource, the request is denied regardless of risk score. Access is denied by default — no implicit grants exist.
+The result is recorded in the audit log as `policyMatched: true|false`. A separate state-changing variant, `checkAccess`, is invoked through the serialised `sendTx` queue purely to emit an `AccessDecision` event for the on-chain audit trail. The two paths are decoupled: the read used for the per-request decision never blocks on a transaction or competes for the gateway's nonce.
 
 ### 2.4 Multi-Signature Policy Updates (NFR-11)
 
@@ -178,15 +186,21 @@ Socket.io CORS is restricted to the same origin set. Wildcard origin (`*`) is ne
 
 | Property | Value |
 |---|---|
-| Session storage | Redis `session:<uuid>` |
-| TTL | 1 hour, renewed on each heartbeat |
-| Heartbeat interval | 30 seconds (Desktop Agent) |
-| Watchdog scan interval | 60 seconds (server-side) |
-| Revocation | Immediate Redis DEL + Socket.io broadcast |
+| Session storage | Redis `session:<uuid>` (UUID v4) |
+| TTL | 1 hour, refreshed on each heartbeat |
+| Heartbeat interval | 10 seconds (Desktop Agent) |
+| Watchdog scan interval | 5 seconds (server-side) |
+| Watchdog timeout | 35 seconds without heartbeat → revoke |
+| Revocation propagation | Redis DEL + on-chain `revokeSession` (via `sendTx` queue) + `session_revoked` Socket.io broadcast |
+| TTL-expiry handling | Redis keyspace notifications subscribe to `__keyevent@0__:expired`; expired session keys trigger an on-chain `revokeSession("Redis TTL Expired")` automatically |
 
-The `SessionService.startHeartbeatWatchdog()` scan forcibly revokes sessions whose `lastHeartbeat` timestamp has exceeded the threshold — this covers Desktop Agent crashes or network drops where the client cannot send a revoke signal.
+Three independent mechanisms can revoke a session, all converging on the same workflow:
 
-Revoked sessions are deleted from Redis and immediately broadcast via `session_revoked` WebSocket so all Trust Dashboard instances reflect the change in real time without polling.
+1. **AI risk** — score > 75 in `resource.controller.ts` → off-chain DEL + on-chain revoke + `tamper_alert` socket event with the per-feature reasons that drove the score
+2. **Heartbeat watchdog** — `lastHeartbeat` aged out → on-chain revoke with reason "Heartbeat Timeout"
+3. **Redis TTL expiry** — keyspace notification → on-chain revoke with reason "Redis TTL Expired" (closes the desync window where a session that lapsed silently in Redis would otherwise remain `active: true` on-chain forever)
+
+All three paths produce a `SessionRevoked` event on `AccessPolicy.sol`, so the on-chain history is the single source of truth for session lifecycle.
 
 ---
 
@@ -204,31 +218,90 @@ Every authentication event, access decision, and session revocation is written t
 
 **Merkle anchoring cycle (60 seconds):**
 
-1. All un-anchored logs are fetched from MongoDB
-2. Each log is SHA-256 hashed (canonical JSON representation)
-3. A `merkletreejs` Merkle tree is constructed from the leaf hashes
-4. The root is submitted to `AuditLedger.sol` via `logEvent(bytes32 root)` — permanently recorded on-chain
-5. All included logs are marked `anchored: true` with the root stored in the document
-6. The root is immediately recomputed from the same logs and compared to the on-chain value
-7. Any mismatch triggers a `tamper_alert` Socket.io event to the dashboard and emits a `TamperDetected` blockchain event
+1. All un-anchored logs are fetched from MongoDB (`{ anchored: false }`)
+2. Each log is SHA-256 hashed (canonical JSON representation of `metadata`)
+3. A `merkletreejs` Merkle tree is constructed from the leaf hashes (`sortPairs: true`)
+4. The root is submitted to `AuditLedger.sol` via `anchorMerkleRoot(bytes32 root, uint256 logCount)` — routed through the serialised `sendTx` queue so it cannot collide on the gateway's nonce
+5. All included logs are marked `anchored: true` with the root and tx hash stored in the document
+6. The root is recomputed from the same logs read back fresh from the database and compared to the on-chain value
+7. Any mismatch flips the shared `IntegrityState` module to `COMPROMISED`, fires a `tamper_alert` Socket.io event with details, and calls `triggerAlert("MERKLE_MISMATCH", root)` on `AccessPolicy.sol` (also via `sendTx`)
 
-Any post-anchor modification to a log document produces a different Merkle root — the tamper is detected on the next cycle and surfaced to the Trust Dashboard in real time.
+The Trust Dashboard's top bar reflects `IntegrityState` live — green "Audit SECURE" → red "Audit COMPROMISED" the moment the gateway detects a mismatch. The state resets to SECURE on the next clean cycle.
+
+Any post-anchor modification to a log document produces a different Merkle root — the tamper is detected on the next 60-second cycle and surfaced in real time. Because the on-chain root is immutable, an attacker cannot retroactively cover their tracks even with full database write access.
 
 **STRIDE coverage:** Tampering (on-chain immutable record), Repudiation (every decision logged with userHash and anchored).
 
 ---
 
-## 9. AI Model Integrity
+## 9. AI Model Integrity, Methodology, and Validation
 
-The AI Risk Engine validates its own model file on startup:
+### 9.1 Integrity verification (NFR-09)
 
-```python
-expected_hash = os.environ['MODEL_HASH']
-actual_hash   = sha256(open('model.pkl', 'rb').read()).hexdigest()
-assert actual_hash == expected_hash, 'Model integrity check failed'
-```
+On startup the AI Risk Engine SHA-256 hashes its `model.pkl` and compares against the
+`registeredModelHash` value stored on-chain in `AccessPolicy.sol`. Behaviour is asymmetric:
 
-The expected hash is provided via the `MODEL_HASH` environment variable at container launch. If the loaded model file has been replaced or corrupted, the service refuses to start — preventing supply-chain substitution of the anomaly detection model.
+- **Hash matches** → engine starts normally
+- **Hash mismatch** → engine aborts with a `RuntimeError` and refuses to serve scoring requests
+- **Model file missing** (first boot) → engine logs a warning and auto-trains a fresh baseline; the resulting hash should be registered on-chain by the admin so subsequent boots become integrity-checked
+
+This protects against three substitution vectors:
+1. Container image supply-chain compromise (an attacker swapping the bundled model)
+2. Local file-system attack (replacing `model.pkl` after container start)
+3. Backdoor model that scores attackers as PERMIT (a maliciously-trained model would have a different hash)
+
+### 9.2 Training methodology (synthetic, justified)
+
+The model is trained on 2,000 synthetic samples drawn from the realistic-behaviour distribution
+described in the README. Synthetic data is the appropriate choice for this academic prototype
+because:
+
+- No publicly available behavioural-telemetry dataset matches the six features and the access-control context (CICIDS, CSE-CIC-IDS2018 are network/intrusion-oriented, not session behaviour)
+- Real session telemetry would require GDPR-grade data handling beyond the scope of an SSD coursework
+- The synthetic-data approach is documented practice in the academic insider-threat literature (e.g. CMU CERT Insider Threat dataset)
+
+The model has known ML limitations (independent-feature sampling, Gaussian assumption, no temporal context) which are documented in the project's CLAUDE.md.
+
+### 9.3 Validation against synthesised attacks
+
+To produce a defensible security claim rather than relying on the unsupervised model alone, training generates an additional **held-out attack-pattern set** of 250 samples covering five realistic exfiltration / abuse scenarios:
+
+| Pattern | Recall @ score ≥ 50 | Recall @ score > 75 |
+|---|---|---|
+| Mass enumeration (high velocity + many resources + rapid) | 100% | high |
+| Bulk download (50 MB single transfer) | 100% | high |
+| Rapid-fire (credential stuffing pattern) | 100% | high |
+| Stolen device (`deviceIdMatch=0`) | 100% | high |
+| Geographic anomaly (single feature) | 74% | varies |
+| **Aggregate** | **94.8%** | **84.0%** |
+
+False-positive rate on the 2,000 training normals: **10.6%** at the STEP_UP threshold, **2.1%** at the REVOKE threshold.
+
+Metrics are logged at training time and persisted in `model.pkl` under the `validation_metrics` key, retrievable via `GET /health` from the AI engine.
+
+### 9.4 Hybrid scoring (single-feature extreme handling)
+
+Isolation Forest saturates on extreme single-axis outliers — a 9σ deviation in one feature
+isolates to the same tree depth as a 4σ deviation. To prevent this from degrading single-feature
+attack recall, a post-hoc z-score floor is applied:
+
+| Per-feature z-score (anomaly direction) | Effect |
+|---|---|
+| `deviation > 4.0` | Score raised to at least **51** (forces STEP_UP) |
+| `deviation > 7.0` | Score raised to at least **76** (forces REVOKE) |
+
+The floor reason is recorded in the audit log as `scoreFloor: "strong_single_feature_outlier"` or
+`"extreme_single_feature_outlier"`. The unsupervised IF still drives multi-feature scoring;
+the floor is only an explainability-friendly safety net for the failure mode IF is known to have.
+
+### 9.5 Per-decision explainability
+
+Every score returns a `reasons` array — features whose `|z| > 1.5`, ordered by deviation magnitude,
+each tagged `concerning: true` (anomaly direction) or `false` (safe-direction outlier).
+Reason summaries are logged at the gateway, broadcast on `tamper_alert` socket events, and shown
+inline in the Desktop Agent risk gauge and the Trust Dashboard's Threat Alerts panel. This means
+every REVOKE / STEP_UP can be answered with "*because* feature X was Y σ from the training mean,"
+not just "because the AI said so."
 
 ---
 
@@ -301,7 +374,54 @@ Sensitive configuration (private keys, DB URIs, HMAC secrets) is managed via `.e
 
 ---
 
-## 14. STRIDE Threat Mitigations Summary
+## 14. Cloud Security
+
+The current deployment is **fully local** — every component runs on the developer's machine
+(host-launched gateway / dashboard / Electron agent + four Docker containers for the stateful
+services). This is the appropriate scope for a Semester-6 prototype demo, and it removes
+several attack surfaces that a cloud deployment would introduce.
+
+### 14.1 What's in place today (relevant even locally)
+
+| Control | How it's implemented | Where |
+|---|---|---|
+| Secrets out of source code | All credentials read from `.env`; `.env` gitignored; `.env.example` ships only `CHANGE_ME_*` placeholders | repo root |
+| Fail-fast on placeholder values | `start-all.ps1` aborts if any `CHANGE_ME_*` value remains in `.env` — prevents accidental deployment with default secrets | `start-all.ps1` |
+| HMAC over internal RPC | Gateway → AI engine traffic is HMAC-SHA256 signed, even on a private Docker network | `aiClient.js` + `app.py` |
+| Database access restriction | MongoDB requires AUTH (`MONGO_INITDB_ROOT_USERNAME` / `_PASSWORD`); Redis requires AUTH (`--requirepass`) | `docker-compose.yml` |
+| Container isolation | Each backing service runs in its own Docker container on a private `internal_net` bridge network | `docker-compose.yml` |
+| Least-privilege role mapping | Smart-contract `GATEWAY_ROLE` is granted only to the gateway's signer; `ADMIN_ROLE` to three distinct addresses (single-key demo limitation aside) | `deploy.js`, `AccessPolicy.sol` |
+
+### 14.2 What changes for a real cloud deployment
+
+If this project were promoted to a managed cloud environment (AWS / Azure / GCP), the following
+additional controls would replace or augment the local equivalents:
+
+| Concern | Cloud-native control |
+|---|---|
+| Secrets storage | AWS Secrets Manager / Azure Key Vault / GCP Secret Manager — replace `.env` files; rotate via console |
+| TLS termination | ACM certificates + ALB / Application Gateway with auto-rotation; mTLS enforced at the load balancer with cert-pinning to the agent fleet |
+| Identity & access | IAM roles for the gateway runtime; dashboard admin auth replaced by OAuth2 / SSO with short-lived JWTs (the current `ADMIN_API_KEY` is a known prototype shortcut) |
+| Database access | Private subnet, security-group ingress restricted to the gateway subnet; encryption at rest enabled (MongoDB Atlas / Azure Cosmos / RDS Postgres) |
+| Object storage (audit archive) | S3 / Blob bucket with **bucket policies denying public access**, server-side encryption, versioning + Object Lock for tamper-evidence |
+| Network egress | VPC egress restricted to the AI engine endpoint and the blockchain RPC; everything else denied |
+| Logging | CloudWatch / Azure Monitor with log retention policies; structured JSON logs already produced by `winston` make ingestion trivial |
+| Blockchain RPC | Managed Ethereum endpoint (Infura / Alchemy) with API-key + HTTPS; gateway holds private key in HSM, not .env |
+| Container scanning | ECR / ACR vulnerability scans on every push; image signing (cosign) before deployment |
+
+### 14.3 Why this scope is acceptable for the deliverable
+
+The assignment explicitly says "If deployed on cloud" — VeriChain is not. The choice to demo
+locally is intentional: it removes cloud-provider variability, keeps the security boundaries
+inspectable at every layer, and makes the threat model fully reproducible for the marker.
+Every cloud-security control listed above has a local equivalent in the current codebase
+(secrets in `.env` instead of Secrets Manager, mTLS instead of ALB-terminated TLS,
+Docker network instead of VPC, etc.), so the design **is** cloud-ready — it just hasn't been
+deployed there.
+
+---
+
+## 15. STRIDE Threat Mitigations Summary
 
 | Threat Category | Specific Threat | Mitigation |
 |---|---|---|
@@ -324,6 +444,6 @@ Sensitive configuration (private keys, DB URIs, HMAC secrets) is managed via `.e
 
 ---
 
-## 15. Reporting a Vulnerability
+## 16. Reporting a Vulnerability
 
 This is an academic project. For issues found in this codebase, open a GitHub issue with the label `security`.

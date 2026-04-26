@@ -60,8 +60,23 @@ contract AccessPolicy is ReentrancyGuard, Pausable, AccessControl {
     }
 
     /**
-     * @notice Check if user has access to resource. Emits AccessDecision event.
-     * @dev CHECKS: valid session. EFFECTS: emit event. INTERACTIONS: none.
+     * @notice Read-only access policy lookup. Pure view — no transaction needed.
+     * @dev Use this for the per-request policy check. The bool is returned via JS
+     *      directly (no event emission, no gas cost beyond the eth_call).
+     */
+    function isAccessAllowed(bytes32 userHash, bytes32 resourceHash)
+        external
+        view
+        returns (bool)
+    {
+        return accessRules[userHash][resourceHash];
+    }
+
+    /**
+     * @notice Audit-trail variant of the access check. Emits AccessDecision event.
+     * @dev CHECKS: rule lookup. EFFECTS: emit event. INTERACTIONS: none.
+     *      Costs gas — call in non-blocking fashion only when an immutable record
+     *      of the decision is required for compliance.
      * @param userHash keccak256 of userId — NO plaintext identity on-chain
      * @param resourceHash keccak256 of resourceId — NO plaintext resource on-chain
      */

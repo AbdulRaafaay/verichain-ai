@@ -19,9 +19,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy application code
+# Copy application code (model.pkl is included if present via the wildcard,
+# otherwise risk_engine.py auto-trains a fresh model on first /score call).
 COPY . .
-COPY model.pkl /app/model.pkl
 
 # Set ownership to non-root user
 RUN chown -R verichain:verichain /app

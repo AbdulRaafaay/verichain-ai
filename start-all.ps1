@@ -64,7 +64,8 @@ docker compose stop gateway trust-dashboard nginx 2>$null
 $ErrorActionPreference = $oldPreference
 
 Write-Host "Launching background containers..." -ForegroundColor Gray
-docker compose up -d mongodb redis blockchain ai-engine
+docker compose up -d mongodb redis blockchain
+docker compose up -d --build ai-engine
 Start-Sleep -Seconds 5
 Write-Host "Infrastructure is running." -ForegroundColor Green
 
@@ -137,15 +138,37 @@ if ($fingerprintRaw -match "SHA256 Fingerprint=(.*)") {
 # 5. Launch Services
 Write-Host "`n[5/5] Launching Services..." -ForegroundColor Yellow
 
-# Load secrets from .env
-$envData = Get-Content ".env"
-$REDIS_PASS = ($envData | Select-String "^REDIS_PASSWORD=" | Select-Object -First 1).ToString().Split("=")[1].Trim()
-$MONGO_PASS = ($envData | Select-String "^MONGO_ROOT_PASSWORD=" | Select-Object -First 1).ToString().Split("=")[1].Trim()
-$AI_HMAC_SECRET = ($envData | Select-String "^AI_HMAC_SECRET=" | Select-Object -First 1).ToString().Split("=")[1].Trim()
-$MONGO_USER = "admin"
-if ($envData | Select-String "^MONGO_ROOT_USER=") {
-    $MONGO_USER = ($envData | Select-String "^MONGO_ROOT_USER=" | Select-Object -First 1).ToString().Split("=")[1].Trim()
+# Load secrets from .env — fail fast on missing keys or unfilled CHANGE_ME placeholders
+if (-not (Test-Path ".env")) {
+    Write-Error "`n.env not found. Copy .env.example to .env and fill in all CHANGE_ME values."
+    exit 1
 }
+$envData = Get-Content ".env"
+
+function Read-EnvKey {
+    param([string]$keyName, [bool]$required = $true)
+    $line = $envData | Select-String "^${keyName}=" | Select-Object -First 1
+    if ($null -eq $line) {
+        if ($required) {
+            Write-Error "`nMissing required env key: ${keyName}. Add it to .env and re-run."
+            exit 1
+        }
+        return $null
+    }
+    $value = $line.ToString().Split("=", 2)[1].Trim()
+    if ($required -and ($value -eq "" -or $value -like "CHANGE_ME*")) {
+        Write-Error "`nEnv key '${keyName}' is unset or still has the default CHANGE_ME placeholder."
+        exit 1
+    }
+    return $value
+}
+
+$REDIS_PASS     = Read-EnvKey "REDIS_PASSWORD"
+$MONGO_PASS     = Read-EnvKey "MONGO_ROOT_PASSWORD"
+$AI_HMAC_SECRET = Read-EnvKey "AI_HMAC_SECRET"
+$ADMIN_API_KEY  = Read-EnvKey "ADMIN_API_KEY"
+$MONGO_USER     = Read-EnvKey "MONGO_ROOT_USER" $false
+if ([string]::IsNullOrEmpty($MONGO_USER)) { $MONGO_USER = "admin" }
 
 # Launch Gateway
 # We must use 127.0.0.1 and include passwords
@@ -192,16 +215,16 @@ Write-Host "Debug: MONGO_PASS_LEN=$($MONGO_PASS.Length)" -ForegroundColor Gray
 Write-Host "Gateway using DB: $($MONGODB_URI_LOCAL.Replace($ENCODED_MONGO_PASS, '****'))" -ForegroundColor Gray
 Write-Host "Gateway using Redis: $($REDIS_URL_LOCAL.Replace($ENCODED_REDIS_PASS, '****'))" -ForegroundColor Gray
 
-Start-Process powershell -ArgumentList "-NoExit", "-Command", "`$env:ACCESS_POLICY_ADDRESS='$ACCESS_POLICY_ADDRESS';`$env:AUDIT_LEDGER_ADDRESS='$AUDIT_LEDGER_ADDRESS';`$env:GATEWAY_PRIVATE_KEY='0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80';`$env:BLOCKCHAIN_RPC='http://127.0.0.1:8545';`$env:MONGODB_URI='$MONGODB_URI_LOCAL';`$env:REDIS_URL='$REDIS_URL_LOCAL';`$env:AI_ENGINE_URL='http://127.0.0.1:5001';`$env:AI_HMAC_SECRET='$AI_HMAC_SECRET';`$env:TRUST_DASHBOARD_ORIGIN='http://localhost:3005';`$env:GATEWAY_KEY_PATH='$certKey';`$env:GATEWAY_CERT_PATH='$certCrt';`$env:CA_CERT_PATH='$caCrt';Set-Location packages/gateway; npm run dev" -WindowStyle Normal
+Start-Process powershell -ArgumentList "-NoExit", "-Command", "`$env:ACCESS_POLICY_ADDRESS='$ACCESS_POLICY_ADDRESS';`$env:AUDIT_LEDGER_ADDRESS='$AUDIT_LEDGER_ADDRESS';`$env:GATEWAY_PRIVATE_KEY='0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80';`$env:BLOCKCHAIN_RPC='http://127.0.0.1:8545';`$env:MONGODB_URI='$MONGODB_URI_LOCAL';`$env:REDIS_URL='$REDIS_URL_LOCAL';`$env:AI_ENGINE_URL='http://127.0.0.1:5001';`$env:AI_HMAC_SECRET='$AI_HMAC_SECRET';`$env:ADMIN_API_KEY='$ADMIN_API_KEY';`$env:TRUST_DASHBOARD_ORIGIN='http://localhost:3005';`$env:GATEWAY_KEY_PATH='$certKey';`$env:GATEWAY_CERT_PATH='$certCrt';`$env:CA_CERT_PATH='$caCrt';Set-Location packages/gateway; npm run dev" -WindowStyle Normal
 Write-Host "-> Security Gateway starting..." -ForegroundColor Gray
 
 # Launch Dashboard
 # Set PORT=3005 to avoid conflict with Desktop Agent (Vite) on 3000
-Start-Process powershell -ArgumentList "-NoExit", "-Command", "`$env:PORT='3005';`$env:REACT_APP_GATEWAY_URL='https://localhost:8443';Set-Location packages/trust-dashboard; npm start" -WindowStyle Normal
+Start-Process powershell -ArgumentList "-NoExit", "-Command", "`$env:PORT='3005';`$env:REACT_APP_GATEWAY_URL='https://localhost:8443';`$env:REACT_APP_ADMIN_API_KEY='$ADMIN_API_KEY';Set-Location packages/trust-dashboard; npm start" -WindowStyle Normal
 Write-Host "-> Trust Dashboard starting on port 3005..." -ForegroundColor Gray
 
-# Launch Desktop Agent
-Start-Process powershell -ArgumentList "-NoExit", "-Command", "`$env:GATEWAY_FINGERPRINT='$GATEWAY_FINGERPRINT';`$env:GATEWAY_CERT_PATH='$certCrt';`$env:REACT_APP_GATEWAY_URL='https://localhost:8443';Set-Location packages/desktop-agent; npm start" -WindowStyle Normal
+# Launch Desktop Agent — also receives ADMIN_API_KEY so System Status can call /admin/system-status
+Start-Process powershell -ArgumentList "-NoExit", "-Command", "`$env:GATEWAY_FINGERPRINT='$GATEWAY_FINGERPRINT';`$env:GATEWAY_CERT_PATH='$certCrt';`$env:REACT_APP_GATEWAY_URL='https://localhost:8443';`$env:ADMIN_API_KEY='$ADMIN_API_KEY';Set-Location packages/desktop-agent; npm start" -WindowStyle Normal
 Write-Host "-> Desktop Agent starting..." -ForegroundColor Gray
 
 Write-Host "`n=============================================" -ForegroundColor Green

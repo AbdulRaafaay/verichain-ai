@@ -5,6 +5,7 @@ import { ResourceController }  from '../controllers/resource.controller';
 import { AdminController }     from '../controllers/admin.controller';
 import { validate, validateQuery } from '../middleware/validate';
 import { rateLimit }           from '../middleware/rateLimit';
+import { requireAdmin }        from '../middleware/requireAdmin';
 import {
     NonceQuerySchema,
     LoginSchema,
@@ -47,19 +48,18 @@ router.post(
     HeartbeatController.ping,
 );
 
-// ── Admin — session management ────────────────────────────────────────────────
-router.get('/admin/overview',          AdminController.getOverview);
-router.post('/admin/revoke', validate(RevokeSessionSchema), AdminController.revokeSession);
+// ── Admin — all routes require X-Admin-Key header ────────────────────────────
+router.use('/admin', requireAdmin);
 
-// ── Admin — audit log viewer ──────────────────────────────────────────────────
-router.get('/admin/audit-logs', AdminController.getAuditLogs);
-
-// ── Admin — multi-sig policy management ──────────────────────────────────────
-router.get('/admin/pending-policies',                              AdminController.getPendingPolicies);
-router.post('/admin/propose-policy', validate(ProposePolicySchema), AdminController.proposePolicy);
-router.post('/admin/approve',        validate(ApprovePolicySchema), AdminController.approvePolicy);
-router.post('/admin/simulate-tamper',  AdminController.simulateTamper);
-router.get('/admin/system-status',     AdminController.getSystemStatus);
-router.get('/admin/blockchain-events', AdminController.getBlockchainEvents);
+router.get('/admin/overview',            AdminController.getOverview);
+router.post('/admin/revoke',             validate(RevokeSessionSchema), AdminController.revokeSession);
+router.get('/admin/audit-logs',          AdminController.getAuditLogs);
+router.get('/admin/pending-policies',    AdminController.getPendingPolicies);
+router.post('/admin/propose-policy',     validate(ProposePolicySchema), AdminController.proposePolicy);
+router.post('/admin/approve',            validate(ApprovePolicySchema), AdminController.approvePolicy);
+router.post('/admin/simulate-tamper',    AdminController.simulateTamper);
+router.get('/admin/system-status',       AdminController.getSystemStatus);
+router.get('/admin/blockchain-events',   AdminController.getBlockchainEvents);
+router.get('/admin/recent-alerts',       AdminController.getRecentAlerts);
 
 export default router;

@@ -57,47 +57,53 @@ function createWindow() {
         },
     });
 
+    // NFR-03 cert pinning — enforce hard fail on mismatch for our gateway hostname.
+    // callback(0)  = trust  |  callback(-2) = reject  |  callback(-3) = use OS chain.
     mainWindow.webContents.session.setCertificateVerifyProc((request, callback) => {
         const { hostname, certificate } = request;
-
-        // ONLY verify the fingerprint for our Gateway (or localhost in dev)
-        // This avoids pinning failures for unrelated requests like dns.google
         const isGateway = hostname === '127.0.0.1' || hostname === 'localhost' || hostname === 'gateway';
 
-        if (isGateway) {
-            // Determine expected fingerprint from the certificate file directly
-            let expected = '';
-            try {
-                const certPath = process.env.GATEWAY_CERT_PATH;
-                if (certPath && fs.existsSync(certPath)) {
-                    const certBuffer = fs.readFileSync(certPath);
-                    const crypto = require('crypto');
-                    const cert = new crypto.X509Certificate(certBuffer);
-                    expected = cert.fingerprint256.replace(/:/g, '').toUpperCase();
-                }
-            } catch (e) {
-                if (process.env.GATEWAY_FINGERPRINT) {
-                    expected = process.env.GATEWAY_FINGERPRINT.replace(/:/g, '').toUpperCase();
-                }
-            }
-
-            if (expected) {
-                let actual = certificate.fingerprint;
-                if (actual.startsWith('sha256/')) {
-                    const b64 = actual.split('/')[1];
-                    actual = Buffer.from(b64, 'base64').toString('hex').toUpperCase();
-                } else {
-                    actual = actual.replace(/:/g, '').toUpperCase();
-                }
-
-                if (actual !== expected) {
-                    logger.error('mTLS Pinning Failure: Fingerprint mismatch!', { hostname, expected, actual });
-                } else {
-                    logger.info('mTLS Pinning Verified: Trust established.', { hostname });
-                }
-            }
+        if (!isGateway) {
+            // For non-gateway hosts (dns.google, fonts.googleapis.com, …) defer to the OS chain.
+            return callback(-3);
         }
 
+        // Resolve the expected fingerprint from disk (the cert that startup just generated).
+        let expected = '';
+        try {
+            const certPath = process.env.GATEWAY_CERT_PATH;
+            if (certPath && fs.existsSync(certPath)) {
+                const certBuffer = fs.readFileSync(certPath);
+                const crypto = require('crypto');
+                const cert = new crypto.X509Certificate(certBuffer);
+                expected = cert.fingerprint256.replace(/:/g, '').toUpperCase();
+            }
+        } catch (_e) { /* fall through to env var */ }
+
+        if (!expected && process.env.GATEWAY_FINGERPRINT) {
+            expected = process.env.GATEWAY_FINGERPRINT.replace(/:/g, '').toUpperCase();
+        }
+
+        if (!expected) {
+            // Pinning configured but no expected fingerprint available — fail closed.
+            logger.error('mTLS Pinning: no expected fingerprint configured — rejecting', { hostname });
+            return callback(-2);
+        }
+
+        let actual = certificate.fingerprint;
+        if (actual.startsWith('sha256/')) {
+            const b64 = actual.split('/')[1];
+            actual = Buffer.from(b64, 'base64').toString('hex').toUpperCase();
+        } else {
+            actual = actual.replace(/:/g, '').toUpperCase();
+        }
+
+        if (actual !== expected) {
+            logger.error('mTLS Pinning Failure: rejecting mismatched gateway cert', { hostname, expected, actual });
+            return callback(-2);
+        }
+
+        logger.info('mTLS Pinning Verified: trust established', { hostname });
         callback(0);
     });
 
@@ -200,35 +206,46 @@ ipcMain.handle('auth:login', async () => {
 
 /**
  * resource:access — Sequence 2.
- * Sends the session's telemetry to the gateway, which scores it with the AI
- * engine and checks the on-chain policy before returning an allow/deny.
- * Pass { simulateAnomaly: true } to force a high risk score for demo purposes.
+ * Accepts all 6 Isolation Forest features directly from the renderer.
+ * Raw values are forwarded to the gateway with no pre-filtering.
  */
-ipcMain.handle('resource:access', async (_event, { resourceId = 'demo-resource', simulateAnomaly = false, velocity, drift } = {}) => {
+ipcMain.handle('resource:access', async (_event, {
+    resourceId     = 'demo-resource',
+    accessVelocity  = 0,
+    geoDistanceKm   = 0,
+    uniqueResources = 1,
+    downloadBytes   = 1024,
+    timeSinceLast   = 300,
+    deviceIdMatch   = 1,
+} = {}) => {
     const gatewayUrl = process.env.REACT_APP_GATEWAY_URL || 'https://localhost:8443';
     const httpsAgent = getHttpsAgent();
 
     const sessionId = global.__vcSessionId;
     if (!sessionId) throw new Error('No active session — authenticate first');
 
-    // Determine simulation mode from slider values
-    const vel  = velocity !== undefined ? parseFloat(velocity) : 0;
-    const dft  = drift    !== undefined ? parseFloat(drift)    : 0;
-
-    // drift >= 3.5 → full anomaly (REVOKE); velocity >= 40 → step-up auth; else real AI
-    const forceAnomaly = simulateAnomaly || dft >= 3.5;
-    const forceStepUp  = !forceAnomaly && vel >= 40;
-
     const telemetry = {
-        accessVelocity:  forceAnomaly ? 98  : forceStepUp ? 62 : parseFloat((Math.random() * 5 + 2).toFixed(2)),
-        deviceIdMatch:   forceAnomaly ? 0   : forceStepUp ? 0  : 1,
-        geoDistanceKm:   forceAnomaly ? 800 : forceStepUp ? 25 : parseFloat((Math.random() * 1).toFixed(2)),
-        uniqueResources: forceAnomaly ? 50  : forceStepUp ? 12 : 1,
-        downloadBytes:   forceAnomaly ? 500_000_000 : forceStepUp ? 8_000_000 : 1024,
-        timeSinceLast:   forceAnomaly ? 1   : forceStepUp ? 8  : 300,
-        simulateAnomaly: forceAnomaly,
-        simulateStepUp:  forceStepUp,
+        accessVelocity:  Number(accessVelocity),
+        geoDistanceKm:   Number(geoDistanceKm),
+        uniqueResources: Number(uniqueResources),
+        downloadBytes:   Number(downloadBytes),
+        timeSinceLast:   Number(timeSinceLast),
+        deviceIdMatch:   Number(deviceIdMatch),
     };
+
+    // Detailed I/O log so you can trace exactly what the AI engine is being asked to score.
+    console.log('\n┌─────────────────────────────────────────────────────────────');
+    console.log(`│ [resource:access] → POST ${gatewayUrl}/api/resource/access`);
+    console.log(`│ sessionId : ${sessionId.slice(0, 8)}…`);
+    console.log(`│ resourceId: ${resourceId}`);
+    console.log('│ telemetry :');
+    console.log(`│    accessVelocity  = ${telemetry.accessVelocity}  req/min`);
+    console.log(`│    geoDistanceKm   = ${telemetry.geoDistanceKm}   km`);
+    console.log(`│    uniqueResources = ${telemetry.uniqueResources} files`);
+    console.log(`│    downloadBytes   = ${telemetry.downloadBytes}   bytes (${(telemetry.downloadBytes/1024/1024).toFixed(2)} MB)`);
+    console.log(`│    timeSinceLast   = ${telemetry.timeSinceLast}   seconds`);
+    console.log(`│    deviceIdMatch   = ${telemetry.deviceIdMatch}`);
+    console.log('└─────────────────────────────────────────────────────────────');
 
     try {
         const res = await axios.post(
@@ -236,11 +253,65 @@ ipcMain.handle('resource:access', async (_event, { resourceId = 'demo-resource',
             { sessionId, resourceId, telemetry },
             { httpsAgent }
         );
+
+        const { riskScore, decision, reasons } = res.data;
+        const concerning = (reasons || []).filter(r => r.concerning);
+        const informational = (reasons || []).filter(r => !r.concerning);
+
+        const fmtReason = (r) => {
+            if (r.systemFault || typeof r.zScore !== 'number') {
+                return r.label || r.feature || 'system fault';
+            }
+            return `${r.label || r.feature}: ${r.value}${r.unit ? ' '+r.unit : ''}  (expected ~${r.expected?.toFixed?.(1) ?? r.expected}, z=${r.zScore})`;
+        };
+
+        console.log('┌─────────────────────────────────────────────────────────────');
+        console.log(`│ [resource:access] ← RESPONSE  ${decision} · risk=${riskScore}`);
+        if (concerning.length) {
+            console.log('│ Anomaly-direction features (driving the score up):');
+            for (const r of concerning) console.log(`│    ⚠ ${fmtReason(r)}`);
+        }
+        if (informational.length) {
+            console.log('│ Unusual but not concerning (safe-direction outliers):');
+            for (const r of informational) console.log(`│    ℹ ${fmtReason(r)}`);
+        }
+        if (!concerning.length && !informational.length) {
+            console.log('│ All features within normal training distribution');
+        }
+        if (res.data.scoreFloor) {
+            console.log(`│ ⚡ Score floor applied: ${res.data.scoreFloor}`);
+        }
+        console.log('└─────────────────────────────────────────────────────────────\n');
+
         return res.data;
     } catch (err) {
         const msg = err.response?.data?.error || err.message || 'Access request failed';
         const data = err.response?.data || {};
-        // Surface structured error so the UI can display risk score + decision
+
+        console.log('┌─────────────────────────────────────────────────────────────');
+        console.log(`│ [resource:access] ← DENIED  ${data.decision || '?'} · risk=${data.riskScore ?? '?'}`);
+        const concerning = (data.reasons || []).filter(r => r.concerning);
+        const informational = (data.reasons || []).filter(r => !r.concerning);
+        const fmtReason = (r) => {
+            if (r.systemFault || typeof r.zScore !== 'number') {
+                return r.label || r.feature || 'system fault';
+            }
+            return `${r.label || r.feature}: ${r.value}${r.unit ? ' '+r.unit : ''}  (expected ~${r.expected?.toFixed?.(1) ?? r.expected}, z=${r.zScore})`;
+        };
+        if (concerning.length) {
+            console.log('│ Anomaly-direction features (driving the score up):');
+            for (const r of concerning) console.log(`│    ⚠ ${fmtReason(r)}`);
+        }
+        if (informational.length) {
+            console.log('│ Unusual but not concerning:');
+            for (const r of informational) console.log(`│    ℹ ${fmtReason(r)}`);
+        }
+        if (data.scoreFloor) {
+            console.log(`│ ⚡ Score floor applied: ${data.scoreFloor}`);
+        }
+        console.log(`│ message: ${msg}`);
+        console.log('└─────────────────────────────────────────────────────────────\n');
+
         throw Object.assign(new Error(msg), data);
     }
 });
@@ -248,18 +319,24 @@ ipcMain.handle('resource:access', async (_event, { resourceId = 'demo-resource',
 ipcMain.handle('system:get-status', async () => {
     const httpsAgent = getHttpsAgent();
     const gatewayUrl = process.env.REACT_APP_GATEWAY_URL || 'https://localhost:8443';
+    // No hardcoded fallback — production must inject ADMIN_API_KEY explicitly.
+    // If unset, the admin status fetch falls back to /health below.
+    const adminKey = process.env.ADMIN_API_KEY;
+    const adminHeaders = adminKey ? { 'X-Admin-Key': adminKey } : undefined;
 
-    const check = async (fn) => { 
-        try { 
-            const r = await fn(); 
-            return r.data; 
-        } catch (err) { 
+    const check = async (fn) => {
+        try {
+            const r = await fn();
+            return r.data;
+        } catch (err) {
             logger.error('Status check failed', { url: gatewayUrl, error: err.message });
-            return null; 
-        } 
+            return null;
+        }
     };
 
-    const s = await check(() => axios.get(`${gatewayUrl}/api/admin/system-status`, { httpsAgent, timeout: 3000 }));
+    const s = adminHeaders
+        ? await check(() => axios.get(`${gatewayUrl}/api/admin/system-status`, { httpsAgent, headers: adminHeaders, timeout: 3000 }))
+        : null;
     
     const uptimeSec = Math.floor((Date.now() - startTime) / 1000);
     const uptimeStr = uptimeSec > 60 ? `${Math.floor(uptimeSec / 60)}m ${uptimeSec % 60}s` : `${uptimeSec}s`;

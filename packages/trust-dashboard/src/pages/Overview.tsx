@@ -1,190 +1,263 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { io } from 'socket.io-client';
-import axios from 'axios';
-import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
+import { LineChart, Line, AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
+import api, { GATEWAY_URL, ADMIN_KEY } from '../api';
 
 interface Stats {
     activeSessions: number;
-    avgRiskScore: number;
-    alertsToday: number;
-    logIntegrity: string;
+    avgRiskScore:   number;
+    alertsToday:    number;
+    logIntegrity:   string;
 }
 
-interface RiskPoint { time: string; score: number; }
-interface Alert     { type: string; timestamp: string; }
+interface RiskPoint   { time: string; score: number; sessions: number; }
 interface BlockchainStatus { root: string; logCount: number; timestamp: string; }
+interface SystemStatus { gateway: string; ai: string; blockchain: string; storage: string; heartbeat: string; }
+
+/** Live system architecture diagram — nodes pulse when traffic is detected. */
+const ArchitectureMap: React.FC<{ stats: Stats; sysStatus: SystemStatus | null; lastEventName: string | null }> = ({ stats, sysStatus, lastEventName }) => {
+    const isHealthy = (s?: string) => !!s && (s === 'Connected' || s === 'Operational' || s === 'Running' || s === 'Healthy');
+
+    const nodes = [
+        { id: 'agent',      label: 'Desktop Agent', sub: 'Electron + ZKP', x: 8,  y: 50, active: stats.activeSessions > 0 },
+        { id: 'gateway',    label: 'Gateway (PEP)', sub: 'mTLS + Express', x: 38, y: 50, active: isHealthy(sysStatus?.gateway) },
+        { id: 'ai',         label: 'AI Engine',     sub: 'IsoForest',      x: 68, y: 12, active: isHealthy(sysStatus?.ai) },
+        { id: 'redis',      label: 'Redis',         sub: 'Sessions',       x: 68, y: 50, active: isHealthy(sysStatus?.heartbeat) },
+        { id: 'mongo',      label: 'MongoDB',       sub: 'Audit Logs',     x: 68, y: 88, active: isHealthy(sysStatus?.storage) },
+        { id: 'blockchain', label: 'Blockchain',    sub: 'Hardhat / EVM',  x: 92, y: 50, active: isHealthy(sysStatus?.blockchain) },
+    ];
+
+    return (
+        <div className="arch-map">
+            <svg viewBox="0 0 100 100" preserveAspectRatio="none" style={{ position: 'absolute', inset: 0, width: '100%', height: '100%' }}>
+                <defs>
+                    <marker id="arrowhead" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto">
+                        <polygon points="0 0, 6 3, 0 6" fill="rgba(96, 165, 250, 0.5)" />
+                    </marker>
+                </defs>
+                {/* Connection lines */}
+                <line x1="20" y1="50" x2="35" y2="50" stroke="rgba(96, 165, 250, 0.4)" strokeWidth="0.4" markerEnd="url(#arrowhead)" />
+                <line x1="50" y1="50" x2="62" y2="14" stroke="rgba(96, 165, 250, 0.3)" strokeWidth="0.4" markerEnd="url(#arrowhead)" />
+                <line x1="50" y1="50" x2="62" y2="50" stroke="rgba(96, 165, 250, 0.3)" strokeWidth="0.4" markerEnd="url(#arrowhead)" />
+                <line x1="50" y1="50" x2="62" y2="86" stroke="rgba(96, 165, 250, 0.3)" strokeWidth="0.4" markerEnd="url(#arrowhead)" />
+                <line x1="80" y1="50" x2="89" y2="50" stroke="rgba(168, 85, 247, 0.4)" strokeWidth="0.4" markerEnd="url(#arrowhead)" />
+                <line x1="80" y1="86" x2="89" y2="55" stroke="rgba(168, 85, 247, 0.4)" strokeWidth="0.4" markerEnd="url(#arrowhead)" />
+            </svg>
+
+            {nodes.map(n => (
+                <div
+                    key={n.id}
+                    className={`arch-node ${n.active ? 'active' : ''}`}
+                    style={{
+                        left:  `${n.x}%`,
+                        top:   `${n.y}%`,
+                        transform: 'translate(-50%, -50%)',
+                    }}
+                >
+                    <div style={{ fontWeight: 700 }}>{n.label}</div>
+                    <div style={{ fontSize: '0.66rem', color: 'var(--text-dim)' }}>{n.sub}</div>
+                </div>
+            ))}
+
+            <div style={{ position: 'absolute', bottom: '0.75rem', left: '1rem', fontSize: '0.7rem', color: 'var(--text-dim)' }}>
+                Last event: <span style={{ color: 'var(--text-muted)', fontFamily: 'JetBrains Mono, monospace' }}>{lastEventName || '—'}</span>
+            </div>
+        </div>
+    );
+};
 
 const Overview: React.FC = () => {
     const [stats, setStats] = useState<Stats>({
-        activeSessions: 0,
-        avgRiskScore: 0,
-        alertsToday: 0,
-        logIntegrity: 'SECURE',
+        activeSessions: 0, avgRiskScore: 0, alertsToday: 0, logIntegrity: 'SECURE',
     });
-    const [recentAlerts, setRecentAlerts]     = useState<Alert[]>([]);
+    const [riskData, setRiskData] = useState<RiskPoint[]>([]);
     const [blockchainStatus, setBlockchainStatus] = useState<BlockchainStatus | null>(null);
-    const [riskData, setRiskData]             = useState<RiskPoint[]>([]);
+    const [lastEventName, setLastEventName]       = useState<string | null>(null);
+    const [sysStatus, setSysStatus]               = useState<SystemStatus | null>(null);
 
-    // Ref so the polling interval can read the latest count without a stale closure
-    const recentAlertsRef = useRef<Alert[]>([]);
-    recentAlertsRef.current = recentAlerts;
+    const recentAlertsRef = useRef<number>(0);
 
     useEffect(() => {
-        const gatewayUrl = process.env.REACT_APP_GATEWAY_URL || 'https://localhost:8443';
-        const socket = io(gatewayUrl, { withCredentials: true });
+        const socket = io(GATEWAY_URL, { withCredentials: true, auth: { token: ADMIN_KEY } } as any);
 
-        const updateStats = (newStats: Stats) => {
+        const onStats = (newStats: Stats) => {
             setStats(newStats);
             setRiskData(prev =>
-                [...prev, { time: new Date().toLocaleTimeString(), score: newStats.avgRiskScore }].slice(-20)
+                [...prev, {
+                    time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+                    score: newStats.avgRiskScore,
+                    sessions: newStats.activeSessions,
+                }].slice(-30)
             );
+            recentAlertsRef.current = newStats.alertsToday;
         };
 
-        socket.on('stats_update', updateStats);
-        socket.on('tamper_alert',  (alert: Alert)        => setRecentAlerts(prev => [alert, ...prev].slice(0, 5)));
+        socket.on('stats_update', onStats);
         socket.on('merkle_status', (s: BlockchainStatus) => setBlockchainStatus(s));
+        socket.on('blockchain_event', (e: any) => setLastEventName(e?.name || null));
 
-        // Polling fallback — derive stats from the session overview every 5 s
-        const poll = setInterval(async () => {
-            try {
-                const res = await axios.get(`${gatewayUrl}/api/admin/overview`, { withCredentials: true });
-                const sessions: any[] = res.data.sessions || [];
-                const avg = sessions.length
-                    ? Math.round(sessions.reduce((a: number, s: any) => a + (s.riskScore || 0), 0) / sessions.length)
-                    : 0;
-                updateStats({
-                    activeSessions: sessions.length,
-                    avgRiskScore:   avg,
-                    alertsToday:    recentAlertsRef.current.length,
-                    logIntegrity:   'SECURE',
-                });
-            } catch { /* gateway not ready */ }
-        }, 5000);
+        // System health for the architecture diagram
+        const fetchHealth = () => api.get<SystemStatus>('/api/admin/system-status').then(r => setSysStatus(r.data)).catch(() => {});
+        fetchHealth();
+        const healthInterval = setInterval(fetchHealth, 10_000);
 
-        return () => { socket.disconnect(); clearInterval(poll); };
+        return () => { socket.disconnect(); clearInterval(healthInterval); };
     }, []);
 
     const integrityColor = stats.logIntegrity === 'SECURE' ? 'sv-green' : 'sv-red';
 
     return (
-        <div className="page overview">
+        <div className="page">
             <div className="page-header">
                 <div>
-                    <h1 className="page-title">System Overview</h1>
-                    <p className="page-sub">Live security posture and event summary</p>
+                    <h1 className="page-title"><span>⬡</span> System Overview</h1>
+                    <p className="page-sub">Real-time security posture across the entire VeriChain stack</p>
                 </div>
             </div>
 
-            {/* KPI Row */}
+            {/* KPI Strip */}
             <div className="stats-grid">
                 <div className="stat-card">
                     <div className="stat-label">◎ Active Sessions</div>
-                    <div className={`stat-value sv-blue`}>{stats.activeSessions}</div>
-                    <div className="stat-foot">authenticated users</div>
+                    <div className="stat-value sv-blue">{stats.activeSessions}</div>
+                    <div className="stat-foot">authenticated users · live</div>
                 </div>
                 <div className="stat-card">
                     <div className="stat-label">⌁ Avg Risk Score</div>
                     <div className={`stat-value ${stats.avgRiskScore > 75 ? 'sv-red' : stats.avgRiskScore > 50 ? 'sv-yellow' : 'sv-green'}`}>
                         {stats.avgRiskScore}
                     </div>
-                    <div className="stat-foot">out of 100</div>
+                    <div className="stat-foot">isolation forest · 0–100</div>
                 </div>
                 <div className="stat-card">
-                    <div className="stat-label">⚡ Alerts Today</div>
+                    <div className="stat-label">⚡ Security Events</div>
                     <div className={`stat-value ${stats.alertsToday > 0 ? 'sv-yellow' : 'sv-green'}`}>
                         {stats.alertsToday}
                     </div>
-                    <div className="stat-foot">tamper events</div>
+                    <div className="stat-foot">last 24h · revocations + alerts</div>
                 </div>
                 <div className="stat-card">
-                    <div className="stat-label">⛓ Log Integrity</div>
-                    <div className={`stat-value ${integrityColor}`}>{stats.logIntegrity}</div>
-                    <div className="stat-foot">merkle-anchored</div>
+                    <div className="stat-label">⛓ Audit Integrity</div>
+                    <div className={`stat-value ${integrityColor}`} style={{ fontSize: '1.2rem', paddingTop: '0.55rem' }}>
+                        {stats.logIntegrity}
+                    </div>
+                    <div className="stat-foot">merkle-anchored · NFR-13/14</div>
                 </div>
             </div>
 
-            {/* Charts / Panels */}
-            <div className="grid-3" style={{ marginBottom: '1.5rem' }}>
+            {/* Architecture map full-width */}
+            <div className="card" style={{ marginBottom: '1.25rem', padding: '1.25rem' }}>
+                <div className="card-header">
+                    <div>
+                        <div className="card-title">⊞ Live Architecture</div>
+                        <div className="card-subtitle">Components illuminate when traffic flows through them</div>
+                    </div>
+                </div>
+                <div style={{ height: 280, position: 'relative' }}>
+                    <ArchitectureMap stats={stats} sysStatus={sysStatus} lastEventName={lastEventName} />
+                </div>
+            </div>
+
+            {/* Charts row */}
+            <div className="grid-3" style={{ marginBottom: '1.25rem' }}>
                 <div className="card">
                     <div className="card-header">
-                        <div className="card-title">Risk Score Trend</div>
+                        <div>
+                            <div className="card-title">⌁ Risk Score Stream</div>
+                            <div className="card-subtitle">Average risk across all active sessions</div>
+                        </div>
                         <span className="badge badge-blue">{riskData.length} pts</span>
                     </div>
                     <ResponsiveContainer width="100%" height={220}>
-                        <LineChart data={riskData}>
-                            <CartesianGrid strokeDasharray="3 3" stroke="#1e3060" />
-                            <XAxis dataKey="time" stroke="#4a6080" fontSize={11} tick={{ fill: '#8fa3c8' }} />
-                            <YAxis stroke="#4a6080" fontSize={11} domain={[0, 100]} tick={{ fill: '#8fa3c8' }} />
-                            <Tooltip
-                                contentStyle={{ backgroundColor: '#111d35', border: '1px solid #1e3060', borderRadius: '8px' }}
-                                labelStyle={{ color: '#8fa3c8', fontSize: '11px' }}
-                            />
-                            <Line type="monotone" dataKey="score" stroke="#3b82f6" strokeWidth={2} dot={false} activeDot={{ r: 4, fill: '#3b82f6' }} />
-                        </LineChart>
+                        <AreaChart data={riskData}>
+                            <defs>
+                                <linearGradient id="riskGradient" x1="0" y1="0" x2="0" y2="1">
+                                    <stop offset="0%"   stopColor="#60a5fa" stopOpacity={0.4} />
+                                    <stop offset="100%" stopColor="#60a5fa" stopOpacity={0} />
+                                </linearGradient>
+                            </defs>
+                            <CartesianGrid strokeDasharray="3 3" stroke="#1c2a4a" vertical={false} />
+                            <XAxis dataKey="time" stroke="#5b6b8a" fontSize={11} tick={{ fill: '#94a3b8' }} />
+                            <YAxis stroke="#5b6b8a" fontSize={11} domain={[0, 100]} tick={{ fill: '#94a3b8' }} />
+                            <Tooltip />
+                            <Area type="monotone" dataKey="score" stroke="#60a5fa" strokeWidth={2} fill="url(#riskGradient)" />
+                        </AreaChart>
                     </ResponsiveContainer>
                     {riskData.length === 0 && (
-                        <div className="empty-state" style={{ paddingTop: '1rem' }}>
-                            <div className="empty-msg">Waiting for live data…</div>
+                        <div className="empty-state" style={{ padding: '1rem' }}>
+                            <div className="empty-msg">Waiting for live telemetry…</div>
                         </div>
                     )}
                 </div>
 
                 <div className="card">
                     <div className="card-header">
-                        <div className="card-title">⛓ Blockchain</div>
+                        <div>
+                            <div className="card-title">⛓ Latest Anchor</div>
+                            <div className="card-subtitle">On-chain Merkle root</div>
+                        </div>
                     </div>
                     {blockchainStatus ? (
                         <div>
-                            <div style={{ marginBottom: '0.75rem' }}>
-                                <div style={{ fontSize: '0.72rem', color: 'var(--text-dim)', marginBottom: '0.2rem' }}>LAST MERKLE ROOT</div>
-                                <div className="mono" style={{ fontSize: '0.75rem', color: 'var(--text-muted)', wordBreak: 'break-all' }}>
+                            <div style={{ marginBottom: '1rem' }}>
+                                <div style={{ fontSize: '0.66rem', color: 'var(--text-dim)', marginBottom: '0.25rem', letterSpacing: '0.1em', fontWeight: 700, textTransform: 'uppercase' }}>Merkle Root</div>
+                                <div className="mono" style={{ fontSize: '0.74rem', color: 'var(--text-muted)', wordBreak: 'break-all', lineHeight: 1.5 }}>
                                     {blockchainStatus.root}
                                 </div>
                             </div>
-                            <div style={{ display: 'flex', gap: '0.75rem' }}>
+                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.85rem' }}>
                                 <div>
-                                    <div style={{ fontSize: '0.68rem', color: 'var(--text-dim)' }}>LOGS ANCHORED</div>
-                                    <div style={{ fontWeight: 700, color: 'var(--success)' }}>{blockchainStatus.logCount}</div>
+                                    <div style={{ fontSize: '0.65rem', color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: '0.1em', fontWeight: 700 }}>Logs</div>
+                                    <div style={{ fontWeight: 700, color: 'var(--success)', fontSize: '1.4rem', marginTop: '0.2rem' }}>{blockchainStatus.logCount}</div>
                                 </div>
                                 <div>
-                                    <div style={{ fontSize: '0.68rem', color: 'var(--text-dim)' }}>ANCHORED AT</div>
-                                    <div style={{ fontSize: '0.78rem' }}>{new Date(blockchainStatus.timestamp).toLocaleTimeString()}</div>
+                                    <div style={{ fontSize: '0.65rem', color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: '0.1em', fontWeight: 700 }}>Anchored</div>
+                                    <div style={{ fontSize: '0.85rem', marginTop: '0.45rem', fontFamily: 'JetBrains Mono, monospace' }}>{new Date(blockchainStatus.timestamp).toLocaleTimeString()}</div>
                                 </div>
                             </div>
                         </div>
                     ) : (
-                        <div className="empty-state">
+                        <div className="empty-state" style={{ padding: '1.25rem 0' }}>
                             <div className="empty-icon">⛓</div>
-                            <div className="empty-msg">Waiting for anchoring cycle…</div>
+                            <div className="empty-msg">First anchor cycle pending… (every 60s)</div>
                         </div>
                     )}
                 </div>
             </div>
 
-            {/* Recent Alerts */}
+            {/* Live pipeline */}
             <div className="card">
                 <div className="card-header">
-                    <div className="card-title">⚡ Recent Alerts</div>
-                    <span className="badge badge-gray">{recentAlerts.length}</span>
-                </div>
-                {recentAlerts.length === 0 ? (
-                    <div className="empty-state" style={{ padding: '1.5rem' }}>
-                        <div className="empty-icon">✅</div>
-                        <div className="empty-msg">All systems normal. No active threats.</div>
+                    <div>
+                        <div className="card-title">⚡ Request Pipeline</div>
+                        <div className="card-subtitle">Every resource access flows through these zero-trust gates</div>
                     </div>
-                ) : (
-                    <ul style={{ listStyle: 'none', display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-                        {recentAlerts.map((a, i) => (
-                            <li key={i} style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', padding: '0.5rem 0', borderBottom: i < recentAlerts.length - 1 ? '1px solid var(--border)' : 'none' }}>
-                                <span className="badge badge-red">ALERT</span>
-                                <span style={{ fontWeight: 600, fontSize: '0.875rem' }}>{a.type}</span>
-                                <span style={{ marginLeft: 'auto', fontSize: '0.78rem', color: 'var(--text-dim)' }}>
-                                    {new Date(a.timestamp).toLocaleTimeString()}
-                                </span>
-                            </li>
-                        ))}
-                    </ul>
-                )}
+                </div>
+                <div className="pipeline-flow">
+                    <div className="pipeline-step">
+                        <div className="pipeline-step-icon">🔐</div>
+                        <div className="pipeline-step-label">ZKP + mTLS</div>
+                        <div className="pipeline-step-meta">FR-02/03/04</div>
+                    </div>
+                    <span className="pipeline-arrow">→</span>
+                    <div className="pipeline-step">
+                        <div className="pipeline-step-icon">⌁</div>
+                        <div className="pipeline-step-label">AI Risk Score</div>
+                        <div className="pipeline-step-meta">FR-07 · IsoForest</div>
+                    </div>
+                    <span className="pipeline-arrow">→</span>
+                    <div className="pipeline-step">
+                        <div className="pipeline-step-icon">⊕</div>
+                        <div className="pipeline-step-label">Policy Check</div>
+                        <div className="pipeline-step-meta">FR-10 · on-chain view</div>
+                    </div>
+                    <span className="pipeline-arrow">→</span>
+                    <div className="pipeline-step">
+                        <div className="pipeline-step-icon">⛓</div>
+                        <div className="pipeline-step-label">Audit + Anchor</div>
+                        <div className="pipeline-step-meta">FR-13/14 · Merkle</div>
+                    </div>
+                </div>
             </div>
         </div>
     );

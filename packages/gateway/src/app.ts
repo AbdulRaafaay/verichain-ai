@@ -9,6 +9,8 @@ import { SessionService } from './services/session.service';
 import { initSocket, getIO } from './services/socket.service';
 import { BlockchainService } from './services/blockchain.service';
 import { MerkleService } from './services/merkle.service';
+import { AuditLogModel } from './models/audit-log.model';
+import { IntegrityState } from './services/integrity.state';
 import { logger } from './utils/logger';
 import { mtlsVerify } from './middleware/mtlsVerify';
 import routes from './routes';
@@ -18,14 +20,29 @@ dotenv.config();
 
 const app = express();
 
+// Trust the first hop reverse proxy so req.ip returns the real client IP
+// (required for rate-limiter accuracy when deployed behind nginx)
+app.set('trust proxy', 1);
+
 // ── Security middleware (STRIDE mitigations) ──────────────────────────────────
 app.use(helmet());
-// Echo requesting origin back — required for credentials:true (browsers reject wildcard)
+
+// CORS — restrict to the configured Trust Dashboard origin.
+// In development the env var defaults to the dashboard dev server.
+const ALLOWED_ORIGINS = new Set(
+    (process.env.TRUST_DASHBOARD_ORIGIN || 'http://localhost:3005').split(',').map(o => o.trim())
+);
 app.use(cors({
-    origin: (origin: string | undefined, callback: (err: Error | null, allow?: boolean | string) => void) =>
-        callback(null, origin || true),
+    origin: (origin: string | undefined, callback: (err: Error | null, allow?: boolean | string) => void) => {
+        // Allow requests with no Origin header (same-origin, mobile, etc.)
+        if (!origin || ALLOWED_ORIGINS.has(origin)) return callback(null, origin || true);
+        // Allow localhost variants for development
+        if (/^https?:\/\/localhost(:\d+)?$/.test(origin)) return callback(null, origin);
+        callback(new Error(`CORS: origin '${origin}' not allowed`));
+    },
     credentials: true,
 }));
+
 app.use(express.json({ limit: '10kb' }));
 
 // mTLS client-cert enforcement (health endpoint exempt inside middleware)
@@ -52,6 +69,7 @@ function normaliseSession(s: any) {
     return {
         id:            s.sessionId,
         userHash:      s.userHash || s.clientId || 'unknown',
+        currentResource: s.currentResource || '—',
         loginTime:     s.createdAt,
         lastHeartbeat: s.lastHeartbeat || s.createdAt,
         duration:      s.createdAt
@@ -60,6 +78,19 @@ function normaliseSession(s: any) {
         riskScore: s.riskScore ?? 0,
         status:    s.status === 'active' ? 'ACTIVE' : 'REVOKED',
     };
+}
+
+/** Counts security-relevant events in the last 24 h. */
+async function countAlertsToday(): Promise<number> {
+    try {
+        const since = new Date(Date.now() - 24 * 3600 * 1000);
+        return await AuditLogModel.countDocuments({
+            timestamp: { $gte: since },
+            action: { $in: ['SESSION_REVOKED', 'SESSION_TIMEOUT', 'LOGIN_FAILED', 'TAMPER_DETECTED', 'ACCESS_DENIED'] },
+        });
+    } catch {
+        return 0;
+    }
 }
 
 /** Broadcasts the current session list + derived stats to all dashboard clients. */
@@ -71,18 +102,20 @@ async function broadcastState() {
         const avgRisk = sessions.length
             ? Math.round(sessions.reduce((a: number, b: any) => a + (b.riskScore || 0), 0) / sessions.length)
             : 0;
+        const alertsToday = await countAlertsToday();
 
         io.emit('session_update', sessions);
         io.emit('stats_update', {
             activeSessions: sessions.length,
             avgRiskScore:   avgRisk,
-            alertsToday:    0,
-            logIntegrity:   'SECURE',
+            alertsToday,
+            logIntegrity:   IntegrityState.get(),
         });
     } catch {
         // Socket not yet initialised — ignore
     }
 }
+
 
 // Expose helpers so controllers can reach them without importing circular deps
 app.set('broadcastState', broadcastState);
@@ -138,12 +171,13 @@ async function start() {
                 const avgRisk = sessions.length
                     ? Math.round(sessions.reduce((a: number, b: any) => a + (b.riskScore || 0), 0) / sessions.length)
                     : 0;
+                const alertsToday = await countAlertsToday();
                 socket.emit('session_update', sessions);
                 socket.emit('stats_update', {
                     activeSessions: sessions.length,
                     avgRiskScore:   avgRisk,
-                    alertsToday:    0,
-                    logIntegrity:   'SECURE',
+                    alertsToday,
+                    logIntegrity:   IntegrityState.get(),
                 });
             } catch { /* Redis not ready yet */ }
         });
@@ -153,6 +187,7 @@ async function start() {
 
         MerkleService.startBatcher();
         SessionService.startHeartbeatWatchdog();
+        SessionService.listenForExpiredSessions();
 
         server.listen(PORT, () => {
             logger.info(`VeriChain Security Gateway active on :${PORT} (mTLS)`);

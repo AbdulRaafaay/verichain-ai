@@ -13,7 +13,7 @@ contextBridge.exposeInMainWorld('electron', {
         login:      (data)   => ipcRenderer.invoke('auth:login', data),
     },
     resource: {
-        /** Request access to a protected resource. Supports { resourceId, simulateAnomaly, velocity, drift } */
+        /** Request access to a protected resource. Options: { resourceId, accessVelocity, geoDistanceKm, uniqueResources, downloadBytes, timeSinceLast, deviceIdMatch } */
         access: (options) => ipcRenderer.invoke('resource:access', options),
     },
     system: {

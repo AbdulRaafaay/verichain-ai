@@ -1,25 +1,29 @@
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
 
 :root {
-  --bg-void:      #050810;
-  --bg-base:      #080d1a;
-  --bg-surface:   #0d1528;
-  --bg-card:      #111d35;
-  --bg-elevated:  #162040;
-  --border:       #1e3060;
-  --border-glow:  rgba(59, 130, 246, 0.3);
-  --accent:       #3b82f6;
-  --accent-dim:   rgba(59, 130, 246, 0.15);
-  --accent-glow:  0 0 20px rgba(59, 130, 246, 0.35);
-  --success:      #10b981;
-  --warning:      #f59e0b;
-  --danger:       #ef4444;
-  --text-primary: #e8edf5;
-  --text-muted:   #8fa3c8;
-  --text-dim:     #4a6080;
-  --radius:       10px;
-  --radius-sm:    6px;
-  --transition:   0.2s ease;
+  --bg-void:      #04060d;
+  --bg-base:      #070a14;
+  --bg-surface:   #0c1220;
+  --bg-card:      #111828;
+  --bg-elevated:  #18223a;
+  --bg-raised:    #1a2542;
+  --border:        #1c2a4a;
+  --border-soft:   rgba(28, 42, 74, 0.5);
+  --border-glow:   rgba(96, 165, 250, 0.35);
+  --accent:        #60a5fa;
+  --accent-strong: #3b82f6;
+  --accent-dim:    rgba(96, 165, 250, 0.10);
+  --accent-glow:   0 0 24px rgba(96, 165, 250, 0.25);
+  --success:       #34d399;
+  --warning:       #fbbf24;
+  --danger:        #f87171;
+  --text-primary:  #e5edf7;
+  --text-strong:   #ffffff;
+  --text-muted:    #94a3b8;
+  --text-dim:      #5b6b8a;
+  --radius:        12px;
+  --radius-sm:     8px;
+  --transition:    160ms cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -29,9 +33,27 @@ body {
   background: var(--bg-void);
   color: var(--text-primary);
   -webkit-font-smoothing: antialiased;
+  font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11';
   user-select: none;
   overflow: hidden;
+  line-height: 1.5;
 }
+
+/* Subtle radial-gradient backdrop, matching the Trust Dashboard */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(800px circle at 20% 0%, rgba(96, 165, 250, 0.06), transparent 50%),
+    radial-gradient(600px circle at 80% 100%, rgba(168, 85, 247, 0.04), transparent 50%);
+  z-index: 0;
+}
+
+.app-shell, .sidebar, .main-content { position: relative; z-index: 1; }
+
+::selection { background: rgba(96, 165, 250, 0.3); color: var(--text-strong); }
 
 /* ── App Shell ────────────────────────────────────────── */
 .app-shell {
@@ -236,25 +258,31 @@ body {
 
 /* ── Welcome Screen ───────────────────────────────────── */
 .welcome-logo {
-  width: 72px;
-  height: 72px;
-  background: var(--accent-dim);
+  width: 80px;
+  height: 80px;
+  background: linear-gradient(135deg, rgba(96, 165, 250, 0.25), rgba(59, 130, 246, 0.1));
   border: 1px solid var(--border-glow);
-  border-radius: 20px;
+  border-radius: 22px;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 2rem;
+  font-size: 2.2rem;
   margin-bottom: 1.5rem;
-  box-shadow: var(--accent-glow);
+  box-shadow: 0 0 32px rgba(96, 165, 250, 0.25), inset 0 1px 0 rgba(255,255,255,0.04);
+  animation: float 4s ease-in-out infinite;
+}
+
+@keyframes float {
+  0%, 100% { transform: translateY(0); }
+  50%      { transform: translateY(-4px); }
 }
 
 .welcome-title {
-  font-size: 2.25rem;
-  font-weight: 700;
-  letter-spacing: -0.02em;
+  font-size: 2.5rem;
+  font-weight: 800;
+  letter-spacing: -0.03em;
   margin-bottom: 0.5rem;
-  background: linear-gradient(135deg, #e8edf5, #3b82f6);
+  background: linear-gradient(135deg, #ffffff 0%, #60a5fa 80%);
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   background-clip: text;
@@ -698,3 +726,273 @@ input::placeholder { color: var(--text-dim); }
   background: #d97706;
   transform: translateY(-1px);
 }
+
+/* ─────────────────────────────────────────────────────────────────────────
+   Refined Components — replaces heavy inline styles in App.tsx
+   ────────────────────────────────────────────────────────────────────── */
+
+/* Toasts */
+.toast-stack {
+  position: fixed;
+  top: 1rem;
+  right: 1rem;
+  z-index: 9999;
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+  max-width: 360px;
+  pointer-events: none;
+}
+
+.toast {
+  padding: 0.7rem 1rem;
+  border-radius: var(--radius-sm);
+  font-size: 0.82rem;
+  font-weight: 500;
+  border: 1px solid;
+  backdrop-filter: blur(10px);
+  pointer-events: auto;
+  animation: slideRight 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes slideRight {
+  from { opacity: 0; transform: translateX(20px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+
+.toast.success { background: rgba(52, 211, 153, 0.12); border-color: rgba(52, 211, 153, 0.4); color: var(--success); }
+.toast.error   { background: rgba(248, 113, 113, 0.12); border-color: rgba(248, 113, 113, 0.4); color: var(--danger); }
+.toast.warning { background: rgba(251, 191, 36, 0.12); border-color: rgba(251, 191, 36, 0.4); color: var(--warning); }
+.toast.info    { background: rgba(96, 165, 250, 0.12); border-color: rgba(96, 165, 250, 0.4); color: var(--accent); }
+
+/* File Vault */
+.vault-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 0.75rem;
+}
+
+.vault-file {
+  padding: 0.85rem 0.65rem;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  text-align: center;
+  cursor: pointer;
+  transition: all var(--transition);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.vault-file:hover {
+  border-color: var(--accent);
+  background: var(--bg-elevated);
+  transform: translateY(-1px);
+}
+
+.vault-file.selected {
+  border-color: var(--accent);
+  background: var(--accent-dim);
+  box-shadow: 0 0 16px rgba(96, 165, 250, 0.2);
+}
+
+.vault-file-icon {
+  width: 38px;
+  height: 38px;
+  background: linear-gradient(135deg, rgba(96, 165, 250, 0.18), rgba(96, 165, 250, 0.06));
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.2rem;
+}
+
+.vault-file.selected .vault-file-icon {
+  background: linear-gradient(135deg, rgba(96, 165, 250, 0.32), rgba(96, 165, 250, 0.12));
+}
+
+.vault-file-name {
+  font-size: 0.74rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  font-family: 'JetBrains Mono', monospace;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  width: 100%;
+}
+
+.vault-file-meta {
+  font-size: 0.65rem;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+/* Resource bar */
+.resource-bar {
+  display: flex;
+  gap: 0.55rem;
+  margin-bottom: 1rem;
+  align-items: center;
+  flex-wrap: wrap;
+  padding: 0.65rem;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.resource-bar input {
+  flex: 1;
+  min-width: 200px;
+  background: var(--bg-base);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.85rem;
+}
+
+/* Live feature vector bars (Telemetry Lab right pane) */
+.fv-row { margin-bottom: 0.6rem; }
+.fv-head {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.74rem;
+  color: var(--text-muted);
+  margin-bottom: 0.2rem;
+  align-items: baseline;
+}
+.fv-value { font-family: 'JetBrains Mono', monospace; font-weight: 600; }
+.fv-value.lo { color: var(--success); }
+.fv-value.mi { color: var(--warning); }
+.fv-value.hi { color: var(--danger); }
+.fv-track {
+  height: 5px;
+  background: var(--border);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.fv-fill {
+  height: 100%;
+  border-radius: 3px;
+  transition: width 0.35s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.fv-fill.lo { background: var(--success); }
+.fv-fill.mi { background: var(--warning); }
+.fv-fill.hi { background: var(--danger); }
+
+/* Risk Gauge */
+.risk-gauge        { padding: 1rem 0; }
+.risk-gauge-head   { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 0.6rem; }
+.risk-gauge-label  { font-size: 0.78rem; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.08em; font-weight: 700; }
+.risk-gauge-value  { font-size: 1.75rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; font-variant-numeric: tabular-nums; }
+.risk-gauge-value .max { font-size: 0.85rem; font-weight: 400; color: var(--text-dim); }
+.risk-gauge-track  {
+  position: relative;
+  height: 14px;
+  background: var(--bg-raised);
+  border-radius: 7px;
+  overflow: hidden;
+  margin-bottom: 0.35rem;
+  border: 1px solid var(--border);
+}
+.risk-gauge-zone   { position: absolute; top: 0; bottom: 0; width: 1px; background: rgba(255,255,255,0.15); }
+.risk-gauge-fill   { height: 100%; border-radius: 7px; transition: width 0.6s cubic-bezier(.4,0,.2,1); }
+.risk-gauge-scale  {
+  display: flex; justify-content: space-between;
+  font-size: 0.66rem; color: var(--text-dim);
+  margin-bottom: 0.85rem;
+  font-variant-numeric: tabular-nums;
+}
+.risk-gauge-decision {
+  display: inline-block;
+  padding: 0.35rem 0.95rem;
+  border-radius: 6px;
+  font-size: 0.82rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+}
+
+/* Welcome screen polish */
+.welcome-pillars {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 0.75rem;
+  margin: 1rem 0 2rem;
+  max-width: 480px;
+  width: 100%;
+}
+
+.welcome-pillar {
+  padding: 0.85rem 1rem;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  font-size: 0.82rem;
+  color: var(--text-muted);
+}
+
+.welcome-pillar-icon {
+  width: 32px; height: 32px;
+  border-radius: 8px;
+  background: var(--accent-dim);
+  border: 1px solid var(--border-glow);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 0.95rem;
+  flex-shrink: 0;
+}
+
+.welcome-pillar strong { display: block; color: var(--text-primary); font-size: 0.86rem; font-weight: 600; }
+
+/* Quick-action group */
+.quick-actions {
+  display: flex;
+  gap: 0.65rem;
+  flex-wrap: wrap;
+}
+
+/* Telemetry control row */
+.tel-row { margin-bottom: 1.05rem; }
+.tel-row-head {
+  display: flex; justify-content: space-between;
+  font-size: 0.83rem; margin-bottom: 0.35rem;
+  align-items: baseline;
+}
+.tel-row-label { color: var(--text-muted); }
+.tel-row-value { font-family: 'JetBrains Mono', monospace; font-weight: 600; }
+.tel-row-value .unit { font-size: 0.7rem; font-weight: 400; color: var(--text-dim); margin-left: 0.25rem; }
+.tel-row input[type=range] { width: 100%; cursor: pointer; }
+
+/* Device toggle */
+.device-toggle {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 0.65rem 0.85rem;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  margin-bottom: 1rem;
+}
+
+.device-toggle-btn {
+  padding: 0.3rem 1rem;
+  border-radius: 6px;
+  border: none;
+  cursor: pointer;
+  font-weight: 700;
+  font-size: 0.8rem;
+  transition: all var(--transition);
+}
+
+.device-toggle-btn.match    { background: rgba(52, 211, 153, 0.12); color: var(--success); outline: 1px solid var(--success); }
+.device-toggle-btn.mismatch { background: rgba(248, 113, 113, 0.12); color: var(--danger);  outline: 1px solid var(--danger); }
+
+/* Toolbar (telemetry buttons) */
+.tool-bar {
+  display: flex; gap: 0.55rem;
+  margin-top: 0.5rem;
+}
+.tool-bar button { flex: 1; }
+.tool-bar button.btn-secondary { flex: 0 0 auto; min-width: 90px; }

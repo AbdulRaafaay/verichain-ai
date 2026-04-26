@@ -10,42 +10,10 @@ import crypto from 'crypto';
 
 /**
  * AuthController handles the ZKP-based authentication flow (Sequence 1).
- * After successful login it broadcasts a session_update event so the Trust
- * Dashboard reflects the new session in real time without polling.
+ * After successful login it triggers the shared broadcastState helper so the
+ * Trust Dashboard reflects the new session in real time without polling.
  */
 export class AuthController {
-
-    /** Emits current session list + stats to all connected Trust Dashboard clients. */
-    private static async broadcastSessions(): Promise<void> {
-        try {
-            const io = getIO();
-            const raw = await SessionService.getAllSessions();
-            const sessions = raw.map((s: any) => ({
-                id: s.sessionId,
-                userHash: s.userHash || s.clientId || 'unknown',
-                loginTime: s.createdAt,
-                duration: s.createdAt
-                    ? Math.round((Date.now() - new Date(s.createdAt).getTime()) / 1000) + 's'
-                    : '—',
-                riskScore: s.riskScore ?? 0,
-                status: s.status === 'active' ? 'ACTIVE' : 'REVOKED',
-            }));
-
-            const avgRisk = sessions.length
-                ? Math.round(sessions.reduce((a: number, b: any) => a + (b.riskScore || 0), 0) / sessions.length)
-                : 0;
-
-            io.emit('session_update', sessions);
-            io.emit('stats_update', {
-                activeSessions: sessions.length,
-                avgRiskScore: avgRisk,
-                alertsToday: 0,
-                logIntegrity: 'SECURE',
-            });
-        } catch {
-            // Socket not yet initialised — safe to ignore during startup
-        }
-    }
 
     static async getNonce(req: Request, res: Response) {
         const { clientId } = req.query;
@@ -84,27 +52,27 @@ export class AuthController {
             logger.info(`User ${userHash} authenticated — session ${sessionId}`);
             await AuditService.log('LOGIN_SUCCESS', { sessionId, userHash, clientId });
 
-            // 4. Anchor session on-chain (NFR-06) — non-blocking
-            const sessionIdHash = sessionId.replace(/-/g, '');
-            const userHashPadded = userHash.substring(0, 64).padEnd(64, '0');
-            BlockchainService.accessPolicy
-                .createSession(`0x${sessionIdHash}`, `0x${userHashPadded}`)
-                .then((tx: any) => tx.wait())
-                .then(() => {
-                    const io = getIO();
-                    io.emit('blockchain_event', {
-                        id:          sessionId,
-                        event:       'SessionCreated',
-                        txHash:      sessionIdHash,
-                        blockNumber: 0,
-                        timestamp:   new Date().toISOString(),
-                        details:     { userHash: userHash.substring(0, 16) + '…' },
-                    });
+            // 4. Anchor session on-chain (NFR-06) — non-blocking, serialised via sendTx queue.
+            BlockchainService.createSession(sessionId, userHash)
+                .then((receipt: any) => {
+                    try {
+                        const io = getIO();
+                        // Canonical dashboard event shape — { id, name, tx, block, args, timestamp }
+                        io.emit('blockchain_event', {
+                            id:        receipt?.hash ? `${receipt.hash}:created` : `${sessionId}:created`,
+                            name:      'SessionCreated',
+                            tx:        receipt?.hash ?? '—',
+                            block:     receipt?.blockNumber ?? 0,
+                            args:      { sessionId, userHash: userHash.substring(0, 16) + '…' },
+                            timestamp: new Date().toISOString(),
+                        });
+                    } catch { /* socket not ready */ }
                 })
                 .catch((err: Error) => logger.warn('On-chain session creation failed', { error: err.message }));
 
-            // 5. Push live update to Trust Dashboard
-            await AuthController.broadcastSessions();
+            // 5. Push live update to Trust Dashboard via shared broadcaster
+            const broadcastFn = req.app.get('broadcastState');
+            if (broadcastFn) broadcastFn().catch(() => {/* socket not ready */});
 
             res.json({ status: 'success', sessionId, expiresIn: 3600 });
         } catch (err) {

@@ -1,15 +1,35 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import './agent.css';
 
-type Screen = 'WELCOME' | 'AUTHENTICATION' | 'DASHBOARD' | 'STATUS' | 'TELEMETRY' | 'SECURITY' | 'SETTINGS' | 'ABOUT';
-type AuthStep = 'idle' | 'proving' | 'verifying' | 'establishing' | 'success' | 'error';
+type Screen    = 'WELCOME' | 'AUTHENTICATION' | 'DASHBOARD' | 'STATUS' | 'TELEMETRY' | 'SECURITY' | 'SETTINGS' | 'ABOUT';
+type AuthStep  = 'idle' | 'proving' | 'verifying' | 'establishing' | 'success' | 'error';
+type ToastType = 'success' | 'error' | 'warning' | 'info';
+
+interface AiReason {
+    feature?:    string;
+    label?:      string;
+    value?:      number;
+    expected?:   number;
+    zScore?:     number;
+    deviation?:  number;
+    direction?:  string;
+    concerning?: boolean;
+    unit?:       string;
+}
 
 interface AccessResult {
-    success?: boolean;
-    riskScore?: number;
-    decision?: string;
-    error?: string;
-    anomaly?: boolean;
+    success?:       boolean;
+    riskScore?:     number;
+    decision?:      string;
+    error?:         string;
+    reasons?:       AiReason[];
+    reasonSummary?: string;
+}
+
+interface Toast {
+    id: number;
+    type: ToastType;
+    message: string;
 }
 
 const STEPS: AuthStep[] = ['proving', 'verifying', 'establishing', 'success'];
@@ -17,7 +37,7 @@ const STEPS: AuthStep[] = ['proving', 'verifying', 'establishing', 'success'];
 const STEP_LABELS: Record<string, string> = {
     proving:      'Generating Groth16 proof via snarkjs…',
     verifying:    'Establishing mTLS channel… Certificate pinning verified ✓',
-    establishing: 'Verify at Gateway… groth16.verify() running…',
+    establishing: 'Verifying at Gateway… groth16.verify() running…',
 };
 
 const NAV_ITEMS: { screen: Screen; icon: string; label: string }[] = [
@@ -37,54 +57,202 @@ function stepState(step: AuthStep, current: AuthStep): 'done' | 'active' | 'pend
     return 'pending';
 }
 
+// ── Reasons panel ─────────────────────────────────────────────────────────────
+const formatFeatureVal = (v: any, unit?: string): string => {
+    if (typeof v !== 'number') return String(v ?? '?');
+    if (unit === 'bytes' && v >= 1000) {
+        if (v >= 1_000_000) return `${(v / 1_000_000).toFixed(2)} MB`;
+        return `${(v / 1024).toFixed(0)} KB`;
+    }
+    return `${v.toFixed(v < 10 ? 2 : 0)}${unit ? ' ' + unit : ''}`;
+};
+
+const ReasonsPanel: React.FC<{ reasons?: AiReason[]; decision?: string }> = ({ reasons, decision }) => {
+    if (!reasons || reasons.length === 0) {
+        if (decision === 'PERMIT') {
+            return (
+                <div style={{ marginTop: '0.6rem', padding: '0.55rem 0.75rem', background: 'rgba(52, 211, 153, 0.08)', borderRadius: 6, fontSize: '0.78rem', color: 'var(--success)' }}>
+                    ✓ All telemetry features within the normal training distribution
+                </div>
+            );
+        }
+        return null;
+    }
+    const concerning   = reasons.filter(r => r.concerning);
+    const informational = reasons.filter(r => !r.concerning);
+
+    const Row: React.FC<{ r: AiReason; concerning: boolean }> = ({ r, concerning: c }) => (
+        <div style={{
+            display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+            padding: '4px 0',
+            borderBottom: '1px solid var(--border-soft)',
+        }}>
+            <span style={{ fontSize: '0.78rem', color: c ? 'var(--text-primary)' : 'var(--text-muted)', fontWeight: c ? 600 : 400 }}>
+                {c ? '⚠ ' : 'ℹ '}{r.label || r.feature}
+            </span>
+            <span className="mono" style={{ fontSize: '0.74rem', color: c ? 'var(--danger)' : 'var(--text-dim)' }}>
+                {formatFeatureVal(r.value, r.unit)} <span style={{ color: 'var(--text-dim)' }}>vs ~{formatFeatureVal(r.expected, r.unit)}</span>
+                <span style={{ marginLeft: '0.5rem', color: c ? 'var(--warning)' : 'var(--text-dim)' }}>z={r.zScore}</span>
+            </span>
+        </div>
+    );
+
+    return (
+        <div style={{ marginTop: '0.7rem', padding: '0.7rem 0.85rem', background: 'var(--bg-surface)', border: '1px solid var(--border)', borderRadius: 6 }}>
+            {concerning.length > 0 && (
+                <>
+                    <div style={{ fontSize: '0.66rem', color: 'var(--danger)', textTransform: 'uppercase', letterSpacing: '0.1em', fontWeight: 700, marginBottom: '0.3rem' }}>
+                        Anomaly direction · driving the score up
+                    </div>
+                    {concerning.map((r, i) => <Row key={'c'+i} r={r} concerning />)}
+                </>
+            )}
+            {informational.length > 0 && (
+                <>
+                    <div style={{ fontSize: '0.66rem', color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: '0.1em', fontWeight: 700, marginTop: concerning.length ? '0.6rem' : 0, marginBottom: '0.3rem' }}>
+                        Unusual but not concerning
+                    </div>
+                    {informational.map((r, i) => <Row key={'i'+i} r={r} concerning={false} />)}
+                </>
+            )}
+        </div>
+    );
+};
+
+// ── Risk Gauge ────────────────────────────────────────────────────────────────
+const RiskGauge: React.FC<{ score: number; decision: string; reasons?: AiReason[] }> = ({ score, decision, reasons }) => {
+    const color =
+        score > 75 ? 'var(--danger)' :
+        score > 50 ? 'var(--warning)' :
+                     'var(--success)';
+    const label =
+        decision === 'REVOKE'  ? 'SESSION REVOKED' :
+        decision === 'STEP_UP' ? 'STEP-UP REQUIRED' :
+                                 'ACCESS PERMITTED';
+    const decisionBg =
+        score > 75 ? 'rgba(248, 113, 113, 0.12)' :
+        score > 50 ? 'rgba(251, 191, 36, 0.12)' :
+                     'rgba(52, 211, 153, 0.12)';
+
+    return (
+        <div className="risk-gauge">
+            <div className="risk-gauge-head">
+                <span className="risk-gauge-label">Isolation Forest Score</span>
+                <span className="risk-gauge-value" style={{ color }}>
+                    {score.toFixed(2)}<span className="max">/100</span>
+                </span>
+            </div>
+            <div className="risk-gauge-track">
+                <div className="risk-gauge-zone" style={{ left: '50%' }} />
+                <div className="risk-gauge-zone" style={{ left: '75%' }} />
+                <div className="risk-gauge-fill" style={{
+                    width: `${Math.min(score, 100)}%`,
+                    background: `linear-gradient(90deg, var(--success), ${color})`,
+                }} />
+            </div>
+            <div className="risk-gauge-scale">
+                <span>0 · PERMIT</span>
+                <span style={{ color: 'var(--warning)' }}>50 · STEP_UP</span>
+                <span style={{ color: 'var(--danger)' }}>75 · REVOKE</span>
+                <span>100</span>
+            </div>
+            <div className="risk-gauge-decision" style={{ background: decisionBg, border: `1px solid ${color}`, color }}>
+                {score > 75 ? '🛑' : score > 50 ? '⚠' : '✓'} {label}
+            </div>
+            <ReasonsPanel reasons={reasons} decision={decision} />
+        </div>
+    );
+};
+
+// ── Telemetry row ─────────────────────────────────────────────────────────────
+const TelRow: React.FC<{
+    label: string; unit: string; value: number; min: number; max: number; step: number;
+    onChange: (v: number) => void; warn?: number; danger?: number; invert?: boolean;
+    fmt?: (v: number) => string;
+}> = ({ label, unit, value, min, max, step, onChange, warn, danger, invert, fmt }) => {
+    const bad = invert
+        ? (danger != null && value <= danger) || (warn != null && value <= warn)
+        : (danger != null && value >= danger) || (warn != null && value >= warn);
+    const critical = invert
+        ? danger != null && value <= danger
+        : danger != null && value >= danger;
+    const color = critical ? 'var(--danger)' : bad ? 'var(--warning)' : 'var(--success)';
+    const display = fmt ? fmt(value) : value.toString();
+
+    return (
+        <div className="tel-row">
+            <div className="tel-row-head">
+                <span className="tel-row-label">{label}</span>
+                <strong className="tel-row-value" style={{ color }}>
+                    {display}<span className="unit">{unit}</span>
+                </strong>
+            </div>
+            <input
+                type="range" min={min} max={max} step={step} value={value}
+                onChange={e => onChange(parseFloat(e.target.value))}
+                style={{ accentColor: color }}
+            />
+        </div>
+    );
+};
+
+let toastCounter = 0;
+
 const App: React.FC = () => {
     const [currentScreen, setCurrentScreen] = useState<Screen>('WELCOME');
     const [isEnrolled, setIsEnrolled]       = useState(false);
     const [status, setStatus]               = useState<any>(null);
-    const [telemetry, setTelemetry]         = useState<any>(null);
     const [authStep, setAuthStep]           = useState<AuthStep>('idle');
     const [authError, setAuthError]         = useState('');
     const [sessionId, setSessionId]         = useState('');
     const [resourceId, setResourceId]       = useState('demo-resource-001');
     const [accessResult, setAccessResult]   = useState<AccessResult | null>(null);
     const [accessLoading, setAccessLoading] = useState(false);
-    const [velocity, setVelocity]           = useState(3.45);
-    const [drift, setDrift]                 = useState(0.02);
+    const [toasts, setToasts]               = useState<Toast[]>([]);
+
+    // ── All 6 Isolation Forest features ──────────────────────────────────────
+    const [accessVelocity,  setAccessVelocity]  = useState(5);
+    const [geoDistanceKm,   setGeoDistanceKm]   = useState(0);
+    const [uniqueResources, setUniqueResources] = useState(2);
+    const [downloadBytes,   setDownloadBytes]   = useState(50000);
+    const [timeSinceLast,   setTimeSinceLast]   = useState(300);
+    const [deviceIdMatch,   setDeviceIdMatch]   = useState(true);
+
+    const addToast = useCallback((type: ToastType, message: string) => {
+        const id = ++toastCounter;
+        setToasts(prev => [...prev, { id, type, message }]);
+        setTimeout(() => setToasts(prev => prev.filter(t => t.id !== id)), 4000);
+    }, []);
 
     useEffect(() => {
         const el = (window as any).electron;
-        if (el?.auth) {
-            el.auth.isEnrolled().then(setIsEnrolled);
-        }
-        
-        const fetchStatus = () => {
-            if (el?.system) {
-                el.system.getStatus().then(setStatus);
-                el.system.getTelemetry().then(setTelemetry);
-            }
-        };
+        if (el?.auth) el.auth.isEnrolled().then(setIsEnrolled);
 
-        fetchStatus();
-        const interval = setInterval(fetchStatus, 3000);
+        const poll = () => {
+            if (el?.system) el.system.getStatus().then(setStatus).catch(() => {});
+        };
+        poll();
+        const iv = setInterval(poll, 3000);
 
         el?.onSessionRevoked?.(() => {
             setSessionId('');
             setAuthStep('idle');
             setCurrentScreen('WELCOME');
+            addToast('error', 'Session revoked by Gateway — re-authenticate to continue');
         });
 
-        return () => clearInterval(interval);
-    }, []);
+        return () => clearInterval(iv);
+    }, [addToast]);
 
+    // ── Auth handlers ─────────────────────────────────────────────────────────
     const handleEnroll = async () => {
         setAuthStep('proving');
         setAuthError('');
         try {
-            const el = (window as any).electron;
-            if (!el?.auth) throw new Error('Electron Auth API not available (Browser mode)');
-            await el.auth.enroll();
+            await (window as any).electron?.auth?.enroll();
             setIsEnrolled(true);
             setAuthStep('idle');
+            addToast('success', 'Identity enrolled — key stored in OS safeStorage');
         } catch (err: any) {
             setAuthStep('error');
             setAuthError(err.message || 'Enrollment failed');
@@ -96,7 +264,6 @@ const App: React.FC = () => {
         setAuthStep('proving');
         try {
             const el = (window as any).electron;
-            if (!el?.auth) throw new Error('Electron Auth API not available (Browser mode)');
             await new Promise(r => setTimeout(r, 350));
             setAuthStep('verifying');
             const result = await el.auth.login();
@@ -104,16 +271,15 @@ const App: React.FC = () => {
             await new Promise(r => setTimeout(r, 400));
             setSessionId(result.sessionId || '');
             setAuthStep('success');
+            addToast('success', `Session ${(result.sessionId || '').substring(0, 8)}… established`);
         } catch (err: any) {
             setAuthStep('error');
             setAuthError(err.message || 'Authentication failed');
         }
     };
 
-    const navigate = (screen: Screen) => setCurrentScreen(screen);
-    const logout   = () => { setAuthStep('idle'); setSessionId(''); setAccessResult(null); setCurrentScreen('WELCOME'); };
-
-    const requestAccess = async (simulateAnomaly = false, fromDashboard = false) => {
+    // ── Resource access ───────────────────────────────────────────────────────
+    const requestAccess = async () => {
         setAccessLoading(true);
         setAccessResult(null);
         try {
@@ -122,42 +288,116 @@ const App: React.FC = () => {
 
             const result = await el.resource.access({
                 resourceId,
-                simulateAnomaly,
-                // Only pass slider values from the Telemetry tab; Dashboard gets normal telemetry
-                velocity: fromDashboard ? 0 : velocity,
-                drift:    fromDashboard ? 0 : drift,
+                accessVelocity,
+                geoDistanceKm,
+                uniqueResources,
+                downloadBytes,
+                timeSinceLast,
+                deviceIdMatch: deviceIdMatch ? 1 : 0,
             });
-            setAccessResult({ ...result, anomaly: simulateAnomaly });
+
+            setAccessResult({ ...result, success: true });
+            const summary = result.decision === 'STEP_UP' && result.reasonSummary
+                ? ` · ${result.reasonSummary.slice(0, 80)}…`
+                : '';
+            addToast(
+                result.decision === 'STEP_UP' ? 'warning' : 'success',
+                `${result.decision} · risk ${(result.riskScore ?? 0).toFixed(2)}${summary}`
+            );
         } catch (err: any) {
-            setAccessResult({
-                error:    err.message || 'Request failed',
-                riskScore: err.riskScore,
-                decision:  err.decision,
-                anomaly:   simulateAnomaly,
-            });
-            // If session was revoked, go back to welcome
-            if (err.message?.includes('Session Revoked') || err.message?.includes('revoked')) {
-                setTimeout(() => { setSessionId(''); setAuthStep('idle'); setCurrentScreen('WELCOME'); }, 2500);
+            const r: AccessResult = {
+                error:         err.message || 'Request failed',
+                riskScore:     err.riskScore,
+                decision:      err.decision || 'REVOKE',
+                reasons:       err.reasons,
+                reasonSummary: err.reasonSummary,
+            };
+            setAccessResult(r);
+
+            if (r.decision === 'REVOKE') {
+                const reasonText = r.reasons?.[0]?.label
+                    ? ` — ${r.reasons[0].label} anomaly`
+                    : '';
+                addToast('error', `REVOKED · risk ${(r.riskScore ?? 0).toFixed(2)}/100${reasonText}`);
+                setTimeout(() => { setSessionId(''); setAuthStep('idle'); setCurrentScreen('WELCOME'); }, 3000);
+            } else if (r.decision === 'STEP_UP') {
+                addToast('warning', `STEP_UP required · risk ${(r.riskScore ?? 0).toFixed(2)}/100`);
             }
         } finally {
             setAccessLoading(false);
         }
     };
 
-    /* ── Screens ───────────────────────────────────────── */
+    const loadAnomaly = () => {
+        // Pre-load extreme values — panel sees exactly what the AI receives
+        setAccessVelocity(80);
+        setGeoDistanceKm(450);
+        setUniqueResources(40);
+        setDownloadBytes(50_000_000);
+        setTimeSinceLast(2);
+        setDeviceIdMatch(false);
+        setCurrentScreen('TELEMETRY');
+        addToast('warning', 'Anomaly scenario loaded — click "Score with AI" to send');
+    };
+
+    const resetTelemetry = () => {
+        setAccessVelocity(5);
+        setGeoDistanceKm(0);
+        setUniqueResources(2);
+        setDownloadBytes(50000);
+        setTimeSinceLast(300);
+        setDeviceIdMatch(true);
+    };
+
+    const navigate = (screen: Screen) => setCurrentScreen(screen);
+    const logout   = () => {
+        setAuthStep('idle');
+        setSessionId('');
+        setAccessResult(null);
+        setCurrentScreen('WELCOME');
+    };
+
+    /* ─── Screens ──────────────────────────────────────────────────────────── */
 
     const renderWelcome = () => (
         <div className="fullscreen">
             <div className="welcome-logo">🔐</div>
             <h1 className="welcome-title">VeriChain AI</h1>
             <p className="welcome-subtitle">
-                Zero-Knowledge Proof authentication with mTLS and blockchain-anchored audit trails.
+                Continuous zero-trust authentication with cryptographic proofs and on-chain audit anchoring.
             </p>
-            <div className="welcome-features">
-                <div className="feature-chip"><span>🔑</span> ZKP Groth16</div>
-                <div className="feature-chip"><span>🔒</span> mTLS</div>
-                <div className="feature-chip"><span>⛓</span> On-Chain</div>
+
+            <div className="welcome-pillars">
+                <div className="welcome-pillar">
+                    <div className="welcome-pillar-icon">🔑</div>
+                    <div>
+                        <strong>ZKP Login</strong>
+                        Groth16 · key never transmitted
+                    </div>
+                </div>
+                <div className="welcome-pillar">
+                    <div className="welcome-pillar-icon">🔒</div>
+                    <div>
+                        <strong>Mutual TLS</strong>
+                        Cert-pinned channel
+                    </div>
+                </div>
+                <div className="welcome-pillar">
+                    <div className="welcome-pillar-icon">🤖</div>
+                    <div>
+                        <strong>AI Risk Engine</strong>
+                        Isolation Forest scoring
+                    </div>
+                </div>
+                <div className="welcome-pillar">
+                    <div className="welcome-pillar-icon">⛓</div>
+                    <div>
+                        <strong>Blockchain Audit</strong>
+                        Merkle-anchored ledger
+                    </div>
+                </div>
             </div>
+
             <div className="welcome-actions">
                 <button className="btn btn-primary" onClick={() => { setAuthStep('idle'); navigate('AUTHENTICATION'); }}>
                     🔐 Authenticate
@@ -194,9 +434,7 @@ const App: React.FC = () => {
 
                 {authStep === 'idle' && isEnrolled && (
                     <>
-                        <div className="badge badge-green" style={{ marginBottom: '1.25rem' }}>
-                            ● Identity enrolled
-                        </div>
+                        <div className="badge badge-green" style={{ marginBottom: '1.25rem' }}>● Identity enrolled</div>
                         <button className="btn btn-primary btn-full" onClick={handleLogin}>
                             🚀 Authenticate with ZKP
                         </button>
@@ -206,14 +444,14 @@ const App: React.FC = () => {
                     </>
                 )}
 
-                {(authStep === 'proving' || authStep === 'verifying' || authStep === 'establishing') && (
+                {(['proving', 'verifying', 'establishing'] as AuthStep[]).includes(authStep) && (
                     <div className="progress-steps">
                         {(['proving', 'verifying', 'establishing'] as AuthStep[]).map(s => {
-                            const state = stepState(s, authStep);
+                            const state = stepState(s as AuthStep, authStep);
                             return (
                                 <div className="step-row" key={s}>
                                     <div className={`step-circle ${state}`}>
-                                        {state === 'done' ? '✓' : STEPS.indexOf(s) + 1}
+                                        {state === 'done' ? '✓' : STEPS.indexOf(s as AuthStep) + 1}
                                     </div>
                                     <span className={`step-label ${state}`}>{STEP_LABELS[s]}</span>
                                     {state === 'active' && <div className="step-spinner" />}
@@ -248,9 +486,7 @@ const App: React.FC = () => {
                             <span className="alert-icon">⚠</span>
                             <span>{authError}</span>
                         </div>
-                        <button className="btn btn-ghost btn-full" onClick={() => setAuthStep('idle')}>
-                            ← Retry
-                        </button>
+                        <button className="btn btn-ghost btn-full" onClick={() => setAuthStep('idle')}>← Retry</button>
                     </>
                 )}
             </div>
@@ -258,22 +494,23 @@ const App: React.FC = () => {
     );
 
     const renderDashboard = () => {
-        const latestRisk = accessResult?.riskScore ?? null;
-        const riskColor  = latestRisk === null ? 'blue' : latestRisk > 75 ? 'red' : latestRisk > 50 ? 'yellow' : 'green';
+        const r = accessResult;
+        const score = r?.riskScore ?? null;
 
         return (
             <div className="page">
                 <div className="page-header">
                     <h1 className="page-title">Dashboard</h1>
-                    <p className="page-subtitle">Real-time security posture and session metrics</p>
+                    <p className="page-subtitle">Real-time security posture and resource access</p>
                 </div>
 
-                {/* KPI row */}
                 <div className="stats-grid">
                     <div className="stat-card">
-                        <div className="stat-label">Risk Score</div>
-                        <div className={`stat-value ${riskColor}`}>{latestRisk ?? '—'}</div>
-                        <div className="stat-meta">from last access request</div>
+                        <div className="stat-label">Last Risk Score</div>
+                        <div className={`stat-value ${score === null ? 'blue' : score > 75 ? 'red' : score > 50 ? 'yellow' : 'green'}`}>
+                            {score !== null ? score.toFixed(2) : '—'}
+                        </div>
+                        <div className="stat-meta">from last AI evaluation</div>
                     </div>
                     <div className="stat-card">
                         <div className="stat-label">Session</div>
@@ -281,117 +518,82 @@ const App: React.FC = () => {
                         <div className="stat-meta">{sessionId ? sessionId.substring(0, 10) + '…' : '—'}</div>
                     </div>
                     <div className="stat-card">
-                        <div className="stat-label">Access Velocity</div>
-                        <div className="stat-value blue">{telemetry?.accessVelocity ?? '—'}</div>
-                        <div className="stat-meta">req / sec</div>
+                        <div className="stat-label">Velocity</div>
+                        <div className={`stat-value ${accessVelocity >= 40 ? 'red' : 'blue'}`}>{accessVelocity}</div>
+                        <div className="stat-meta">req / min</div>
                     </div>
                     <div className="stat-card">
-                        <div className="stat-label">Uptime</div>
-                        <div className="stat-value blue">{telemetry?.sessionDuration ?? '—'}</div>
-                        <div className="stat-meta">session duration</div>
+                        <div className="stat-label">Geo Distance</div>
+                        <div className={`stat-value ${geoDistanceKm >= 300 ? 'red' : geoDistanceKm >= 100 ? 'yellow' : 'green'}`}>
+                            {geoDistanceKm} km
+                        </div>
+                        <div className="stat-meta">from baseline</div>
                     </div>
                 </div>
 
-                {/* Resource Access Panel */}
+                {/* Access Panel */}
                 <div className="card" style={{ marginBottom: '1rem' }}>
                     <div className="card-title">🔑 Request Protected Resource</div>
 
-                    <div style={{ display: 'flex', gap: '0.6rem', marginBottom: '1rem', alignItems: 'center', flexWrap: 'wrap' }}>
+                    <div className="resource-bar">
                         <input
                             value={resourceId}
                             onChange={e => setResourceId(e.target.value)}
-                            placeholder="Resource ID (e.g. demo-resource-001)"
-                            style={{
-                                flex: 1, minWidth: 200,
-                                background: 'var(--bg-surface)', border: '1px solid var(--border)',
-                                color: 'var(--text-primary)', padding: '0.5rem 0.75rem',
-                                borderRadius: '6px', fontSize: '0.875rem',
-                                fontFamily: 'JetBrains Mono, monospace',
-                            }}
+                            placeholder="Resource ID or path"
                         />
-                        <button
-                            className="btn btn-primary"
-                            disabled={accessLoading}
-                            onClick={() => requestAccess(false, true)}
-                        >
-                            {accessLoading ? '⏳ Checking…' : '🔑 Request Access'}
+                        <button className="btn btn-primary" disabled={accessLoading} onClick={requestAccess}>
+                            {accessLoading ? '⏳ Scoring…' : '🔑 Request Access'}
                         </button>
                         <button
                             className="btn btn-danger"
-                            disabled={accessLoading}
-                            onClick={() => requestAccess(true, true)}
-                            title="Sends anomalous telemetry — AI returns score 92 → session revoked"
+                            onClick={loadAnomaly}
+                            title="Loads extreme telemetry values into the Telemetry Lab"
                         >
-                            ⚡ Simulate Anomaly
+                            ⚡ Anomaly Preset
                         </button>
                     </div>
 
-                    {/* Access Result */}
-                    {accessResult && (
-                        <div style={{
-                            padding: '0.85rem 1rem',
-                            borderRadius: '8px',
-                            background: accessResult.success ? 'rgba(16,185,129,0.08)' : 'rgba(239,68,68,0.08)',
-                            border: `1px solid ${accessResult.success ? 'rgba(16,185,129,0.25)' : 'rgba(239,68,68,0.25)'}`,
-                        }}>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
-                                <span style={{ fontSize: '1.1rem' }}>{accessResult.success ? '✅' : '🚫'}</span>
-                                <strong style={{ color: accessResult.success ? 'var(--success)' : 'var(--danger)' }}>
-                                    {accessResult.success ? 'ACCESS GRANTED' : 'ACCESS DENIED'}
-                                </strong>
-                                {accessResult.riskScore !== undefined && (
-                                    <span className={`badge ${(accessResult.riskScore ?? 0) > 75 ? 'badge-red' : (accessResult.riskScore ?? 0) > 50 ? 'badge-yellow' : 'badge-green'}`}>
-                                        Risk: {accessResult.riskScore}/100
-                                    </span>
-                                )}
-                                {accessResult.decision && (
-                                    <span className="badge badge-blue">Decision: {accessResult.decision}</span>
-                                )}
-                                {accessResult.anomaly && (
-                                    <span className="badge badge-red">⚡ Anomaly Simulated</span>
-                                )}
-                            </div>
-                            {accessResult.error && (
-                                <div style={{ fontSize: '0.82rem', color: 'var(--danger)', marginTop: '0.4rem' }}>
-                                    {accessResult.error}
-                                </div>
-                            )}
+                    {/* AI Result */}
+                    {r && r.riskScore !== undefined && (
+                        <RiskGauge score={r.riskScore} decision={r.decision || 'REVOKE'} reasons={r.reasons} />
+                    )}
+                    {r && !r.riskScore && r.error && (
+                        <div className="alert-box error" style={{ marginTop: '0.5rem' }}>
+                            <span className="alert-icon">⚠</span><span>{r.error}</span>
                         </div>
                     )}
                 </div>
 
-                {/* File Vault Panel */}
+                {/* File Vault */}
                 <div className="card" style={{ marginBottom: '1rem' }}>
                     <div className="card-title">📂 Protected File Vault</div>
-                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))', gap: '1rem' }}>
+                    <div className="vault-grid">
                         {[
-                            { name: 'q1_audit.pdf',   path: '/vault/reports/q1.pdf' },
-                            { name: 'q2_audit.pdf',   path: '/vault/reports/q2.pdf' },
-                            { name: 'system_keys.pem', path: '/vault/keys/master.pem' },
-                            { name: 'user_data.db',    path: '/vault/db/users.db' },
+                            { name: 'q1_audit.pdf',    path: '/vault/reports/q1.pdf',     kind: 'PDF' },
+                            { name: 'q2_audit.pdf',    path: '/vault/reports/q2.pdf',     kind: 'PDF' },
+                            { name: 'system_keys.pem', path: '/vault/keys/master.pem',    kind: 'KEY' },
+                            { name: 'user_data.db',    path: '/vault/db/users.db',        kind: 'DB' },
+                            { name: 'audit_2026.xlsx', path: '/vault/reports/audit.xlsx', kind: 'XLS' },
+                            { name: 'config.yml',      path: '/vault/config.yml',         kind: 'CFG' },
                         ].map(f => (
                             <div
                                 key={f.path}
-                                className="file-item"
-                                onClick={() => { setResourceId(f.path); requestAccess(false, true); }}
-                                style={{
-                                    padding: '1rem', background: 'var(--bg-surface)', border: '1px solid var(--border)',
-                                    borderRadius: '8px', textAlign: 'center', cursor: 'pointer', transition: 'all 0.2s'
-                                }}
+                                onClick={() => setResourceId(f.path)}
+                                className={`vault-file ${resourceId === f.path ? 'selected' : ''}`}
                             >
-                                <div style={{ fontSize: '1.5rem', marginBottom: '0.5rem' }}>📄</div>
-                                <div style={{ fontSize: '0.75rem', fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis' }}>{f.name}</div>
+                                <div className="vault-file-icon">📄</div>
+                                <div className="vault-file-name" title={f.path}>{f.name}</div>
+                                <div className="vault-file-meta">{f.kind}</div>
                             </div>
                         ))}
                     </div>
                 </div>
 
-                {/* Quick Nav */}
                 <div className="card">
                     <div className="card-title">Quick Actions</div>
-                    <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
+                    <div className="quick-actions">
+                        <button className="btn btn-ghost" onClick={() => navigate('TELEMETRY')}>⌁ Telemetry Lab</button>
                         <button className="btn btn-ghost" onClick={() => navigate('SECURITY')}>⊕ Security Center</button>
-                        <button className="btn btn-ghost" onClick={() => navigate('TELEMETRY')}>⌁ Telemetry</button>
                         <button className="btn btn-danger" onClick={logout}>⏻ End Session</button>
                     </div>
                 </div>
@@ -401,16 +603,16 @@ const App: React.FC = () => {
 
     const renderStatus = () => {
         const items = [
-            { key: 'Security Gateway',       val: status?.gateway    ?? 'Connecting...', ok: status?.gateway === 'Connected' || status?.gateway?.includes('Active') },
-            { key: 'mTLS Cert Pinning',      val: status?.pinned     ?? 'Checking...',   ok: status?.pinned === 'Enabled' },
-            { key: 'Zero-Knowledge Service', val: status?.zkp        ?? 'Initialising...', ok: status?.zkp?.includes('Operational') },
-            { key: 'AI Risk Engine',         val: status?.ai         ?? 'Warming up...', ok: status?.ai === 'Operational' },
-            { key: 'Blockchain Network',     val: status?.blockchain ?? 'Syncing...',    ok: status?.blockchain === 'Connected' || status?.blockchain?.includes('Block') },
-            { key: 'Audit Service',          val: status?.audit      ?? 'Starting...',   ok: status?.audit === 'Running' || status?.audit?.includes('logs') },
-            { key: 'Secure Storage',         val: status?.storage    ?? 'Verifying...',  ok: status?.storage === 'Healthy' || status?.storage === 'Connected' },
-            { key: 'Heartbeat Service',      val: status?.heartbeat  ?? 'Idle',          ok: status?.heartbeat === 'Running' || status?.heartbeat === 'Active' },
+            { key: 'Security Gateway',       val: status?.gateway    ?? 'Connecting…',   ok: !!(status?.gateway === 'Connected' || status?.gateway?.includes('Active')) },
+            { key: 'mTLS Cert Pinning',      val: status?.pinned     ?? 'Checking…',     ok: status?.pinned === 'Enabled' },
+            { key: 'Zero-Knowledge Service', val: status?.zkp        ?? 'Initialising…', ok: !!(status?.zkp?.includes('Operational')) },
+            { key: 'AI Risk Engine',         val: status?.ai         ?? 'Warming up…',   ok: status?.ai === 'Operational' },
+            { key: 'Blockchain Network',     val: status?.blockchain ?? 'Syncing…',      ok: !!(status?.blockchain === 'Connected' || status?.blockchain?.includes('Block')) },
+            { key: 'Audit Service',          val: status?.audit      ?? 'Starting…',     ok: !!(status?.audit === 'Running' || status?.audit?.includes('logs')) },
+            { key: 'Secure Storage',         val: status?.storage    ?? 'Verifying…',    ok: !!(status?.storage === 'Healthy' || status?.storage === 'Connected') },
+            { key: 'Heartbeat Service',      val: status?.heartbeat  ?? 'Idle',          ok: !!(status?.heartbeat === 'Running' || status?.heartbeat === 'Active') },
         ];
-        const allGreen = items.filter(i => i.ok).length;
+        const online = items.filter(i => i.ok).length;
 
         return (
             <div className="page">
@@ -426,17 +628,15 @@ const App: React.FC = () => {
                 <div className="stats-grid" style={{ marginBottom: '1rem' }}>
                     <div className="stat-card">
                         <div className="stat-label">Services Online</div>
-                        <div className={`stat-value ${allGreen === 8 ? 'green' : allGreen >= 5 ? 'yellow' : 'red'}`}>
-                            {status ? `${allGreen}/8` : '…'}
+                        <div className={`stat-value ${online === 8 ? 'green' : online >= 5 ? 'yellow' : 'red'}`}>
+                            {status ? `${online}/8` : '…'}
                         </div>
                         <div className="stat-meta">components healthy</div>
                     </div>
                     <div className="stat-card">
-                        <div className="stat-label">Session State</div>
-                        <div className={`stat-value ${sessionId ? 'green' : 'blue'}`}>
-                            {sessionId ? 'AUTH' : 'GUEST'}
-                        </div>
-                        <div className="stat-meta">{sessionId ? sessionId.substring(0, 8) + '…' : 'read-only mode'}</div>
+                        <div className="stat-label">Session</div>
+                        <div className={`stat-value ${sessionId ? 'green' : 'blue'}`}>{sessionId ? 'AUTH' : 'GUEST'}</div>
+                        <div className="stat-meta">{sessionId ? sessionId.substring(0, 8) + '…' : 'read-only'}</div>
                     </div>
                     <div className="stat-card">
                         <div className="stat-label">Process Uptime</div>
@@ -463,113 +663,113 @@ const App: React.FC = () => {
     };
 
     const renderTelemetry = () => {
-        const expectedDecision = drift >= 3.5 ? 'REVOKE' : velocity >= 40 ? 'STEP_UP' : 'PERMIT';
-        const decisionColor    = expectedDecision === 'REVOKE' ? 'red' : expectedDecision === 'STEP_UP' ? 'yellow' : 'green';
+        // Norm scales calibrated to the training distribution so the bars correspond
+        // to what the Isolation Forest model actually treats as anomalous.
+        // Training means/std: velocity 5±2, geo 0±5, resources 5±3, bytes 50k±20k,
+        // timeSinceLast 300±100. ~2σ from mean is the "warning" threshold.
+        const normVelocity  = Math.min(1, Math.max(0, (accessVelocity  - 1)  / 25));
+        const normGeo       = Math.min(1, Math.max(0,  geoDistanceKm        / 100));
+        const normResources = Math.min(1, Math.max(0, (uniqueResources - 1) / 20));
+        const normBytes     = Math.min(1, Math.max(0,  downloadBytes        / 1_000_000));
+        // Time since last — anomalous when LOW (rapid-fire). 1s = 1.0, 300s = 0.0
+        const normTime      = Math.min(1, Math.max(0, 1 - timeSinceLast / 120));
+        const normDevice    = deviceIdMatch ? 0 : 1;
+
+        const features = [
+            { label: 'Access Velocity',   value: accessVelocity,  unit: 'req/min',  norm: normVelocity  },
+            { label: 'Geo Distance',      value: geoDistanceKm,   unit: 'km',       norm: normGeo       },
+            { label: 'Unique Resources',  value: uniqueResources, unit: 'files',    norm: normResources },
+            { label: 'Download Volume',   value: (downloadBytes / 1_000_000).toFixed(2) + ' MB', unit: '', norm: normBytes },
+            { label: 'Time Since Last',   value: timeSinceLast,   unit: 's',        norm: normTime      },
+            { label: 'Device Match',      value: deviceIdMatch ? 'YES' : 'NO', unit: '', norm: normDevice },
+        ];
 
         return (
             <div className="page">
                 <div className="page-header">
-                    <h1 className="page-title">Telemetry</h1>
-                    <p className="page-subtitle">Live behavioral signals used by the AI Risk Engine for continuous scoring</p>
+                    <h1 className="page-title">Telemetry Lab</h1>
+                    <p className="page-subtitle">Control all 6 Isolation Forest features — the AI receives these exact values</p>
                 </div>
 
-                <div className="stats-grid" style={{ marginBottom: '1rem' }}>
-                    <div className="stat-card">
-                        <div className="stat-label">Access Velocity</div>
-                        <div className={`stat-value ${velocity >= 40 ? 'red' : 'blue'}`}>{velocity}</div>
-                        <div className="stat-meta">signals / window</div>
-                    </div>
-                    <div className="stat-card">
-                        <div className="stat-label">Geo Drift</div>
-                        <div className={`stat-value ${drift >= 3.5 ? 'red' : drift >= 2 ? 'yellow' : 'green'}`}>{drift.toFixed(1)}°</div>
-                        <div className="stat-meta">location deviation</div>
-                    </div>
-                    <div className="stat-card">
-                        <div className="stat-label">Session Uptime</div>
-                        <div className="stat-value blue">{telemetry?.sessionDuration ?? '—'}</div>
-                        <div className="stat-meta">active duration</div>
-                    </div>
-                    <div className="stat-card">
-                        <div className="stat-label">Expected Decision</div>
-                        <div className={`stat-value ${decisionColor}`}>{expectedDecision}</div>
-                        <div className="stat-meta">from current signals</div>
-                    </div>
-                </div>
-
-                <div className="card" style={{ marginBottom: '1rem' }}>
-                    <div className="card-title">🚨 Anomaly Simulator</div>
-                    <p style={{ fontSize: '0.82rem', color: 'var(--text-dim)', marginBottom: '1rem' }}>
-                        Scenario A — velocity ≥ 40 → <strong style={{ color: 'var(--warning)' }}>Step-Up Auth</strong>&nbsp;&nbsp;
-                        Scenario B — geo drift ≥ 3.5 → <strong style={{ color: 'var(--danger)' }}>Session Revoke</strong>
-                    </p>
-
-                    <div style={{ marginBottom: '1.25rem' }}>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.4rem', fontSize: '0.85rem' }}>
-                            <span>Access Velocity (signals/window)</span>
-                            <strong style={{ color: velocity >= 40 ? 'var(--danger)' : 'var(--text-primary)' }}>{velocity}</strong>
-                        </div>
-                        <input type="range" min="0" max="100" step="1" value={velocity}
-                            onChange={e => setVelocity(parseFloat(e.target.value))}
-                            style={{ width: '100%', accentColor: velocity >= 40 ? 'var(--danger)' : 'var(--accent)' }} />
-                        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.7rem', color: 'var(--text-dim)', marginTop: '0.2rem' }}>
-                            <span>0 (normal)</span><span style={{ color: 'var(--warning)' }}>40+ (step-up)</span>
-                        </div>
-                    </div>
-
-                    <div style={{ marginBottom: '1.5rem' }}>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.4rem', fontSize: '0.85rem' }}>
-                            <span>Geo Drift (location deviation °)</span>
-                            <strong style={{ color: drift >= 3.5 ? 'var(--danger)' : 'var(--text-primary)' }}>{drift.toFixed(1)}</strong>
-                        </div>
-                        <input type="range" min="0" max="5" step="0.1" value={drift}
-                            onChange={e => setDrift(parseFloat(e.target.value))}
-                            style={{ width: '100%', accentColor: drift >= 3.5 ? 'var(--danger)' : 'var(--accent)' }} />
-                        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.7rem', color: 'var(--text-dim)', marginTop: '0.2rem' }}>
-                            <span>0.0 (normal)</span><span style={{ color: 'var(--danger)' }}>3.5+ (revoke)</span>
-                        </div>
-                    </div>
-
-                    <button
-                        className={`btn btn-full ${expectedDecision === 'REVOKE' ? 'btn-danger' : expectedDecision === 'STEP_UP' ? 'btn-warning' : 'btn-primary'}`}
-                        onClick={() => requestAccess(false)}
-                        disabled={accessLoading || !sessionId}
-                        title={!sessionId ? 'Authenticate first' : ''}
-                    >
-                        {accessLoading ? '⏳ Scoring…' : `Apply Signals → ${expectedDecision}`}
-                    </button>
-                    {!sessionId && (
-                        <p style={{ fontSize: '0.78rem', color: 'var(--text-dim)', marginTop: '0.5rem', textAlign: 'center' }}>
-                            Authenticate first to send signals
-                        </p>
-                    )}
-                </div>
-
-                {/* Result from last Apply Signals */}
-                {accessResult && (
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem', marginBottom: '1rem' }}>
+                    {/* Sliders */}
                     <div className="card">
-                        <div className="card-title">Last Signal Result</div>
-                        <div style={{
-                            padding: '0.85rem 1rem', borderRadius: '8px', marginTop: '0.5rem',
-                            background: accessResult.success ? 'rgba(16,185,129,0.08)' : 'rgba(239,68,68,0.08)',
-                            border: `1px solid ${accessResult.success ? 'rgba(16,185,129,0.25)' : 'rgba(239,68,68,0.25)'}`,
-                        }}>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
-                                <span style={{ fontSize: '1.1rem' }}>{accessResult.success ? '✅' : '🚫'}</span>
-                                <strong style={{ color: accessResult.success ? 'var(--success)' : 'var(--danger)' }}>
-                                    {accessResult.decision || (accessResult.success ? 'PERMIT' : 'DENIED')}
-                                </strong>
-                                {accessResult.riskScore !== undefined && (
-                                    <span className={`badge ${(accessResult.riskScore ?? 0) > 75 ? 'badge-red' : (accessResult.riskScore ?? 0) > 50 ? 'badge-yellow' : 'badge-green'}`}>
-                                        Risk: {accessResult.riskScore}/100
-                                    </span>
-                                )}
-                            </div>
-                            {accessResult.error && (
-                                <div style={{ fontSize: '0.82rem', color: 'var(--danger)', marginTop: '0.4rem' }}>{accessResult.error}</div>
-                            )}
+                        <div className="card-title">⌁ Feature Controls</div>
+
+                        <TelRow label="Access Velocity" unit="req/min" value={accessVelocity} min={0} max={100} step={1}
+                            onChange={setAccessVelocity} warn={15} danger={40} />
+                        <TelRow label="Geo Distance" unit="km" value={geoDistanceKm} min={0} max={500} step={5}
+                            onChange={setGeoDistanceKm} warn={100} danger={300} />
+                        <TelRow label="Unique Resources" unit="files" value={uniqueResources} min={1} max={50} step={1}
+                            onChange={setUniqueResources} warn={10} danger={25} />
+                        <TelRow label="Download Volume" unit="bytes" value={downloadBytes} min={1024} max={100_000_000} step={100000}
+                            onChange={setDownloadBytes} warn={5_000_000} danger={30_000_000}
+                            fmt={v => v >= 1_000_000 ? `${(v / 1_000_000).toFixed(1)} MB` : `${(v / 1024).toFixed(0)} KB`} />
+                        <TelRow label="Time Since Last" unit="s" value={timeSinceLast} min={1} max={600} step={1}
+                            onChange={setTimeSinceLast} warn={30} danger={5} invert />
+
+                        {/* Device Match toggle */}
+                        <div className="device-toggle">
+                            <span style={{ fontSize: '0.83rem', color: 'var(--text-muted)', fontWeight: 500 }}>Device ID Match</span>
+                            <button
+                                onClick={() => setDeviceIdMatch(p => !p)}
+                                className={`device-toggle-btn ${deviceIdMatch ? 'match' : 'mismatch'}`}
+                            >
+                                {deviceIdMatch ? '● MATCH' : '✗ MISMATCH'}
+                            </button>
                         </div>
+
+                        <div className="tool-bar">
+                            <button
+                                className={`btn ${!sessionId ? 'btn-ghost' : 'btn-primary'}`}
+                                onClick={requestAccess}
+                                disabled={accessLoading || !sessionId}
+                            >
+                                {accessLoading ? '⏳ Scoring…' : '🤖 Score with AI'}
+                            </button>
+                            <button className="btn btn-ghost btn-secondary" onClick={resetTelemetry} title="Reset to baseline">
+                                ↺ Reset
+                            </button>
+                        </div>
+                        {!sessionId && (
+                            <p style={{ fontSize: '0.74rem', color: 'var(--text-dim)', marginTop: '0.5rem', textAlign: 'center' }}>
+                                Authenticate first to enable scoring
+                            </p>
+                        )}
                     </div>
-                )}
+
+                    {/* Live pipeline preview */}
+                    <div className="card">
+                        <div className="card-title">📡 Live Feature Vector</div>
+                        <p style={{ fontSize: '0.74rem', color: 'var(--text-dim)', marginBottom: '0.85rem' }}>
+                            Exact values the Isolation Forest will receive
+                        </p>
+                        {features.map(({ label, value, unit, norm }) => {
+                            const tier = norm > 0.75 ? 'hi' : norm > 0.4 ? 'mi' : 'lo';
+                            return (
+                                <div key={label} className="fv-row">
+                                    <div className="fv-head">
+                                        <span>{label}</span>
+                                        <span className={`fv-value ${tier}`}>{value} {unit}</span>
+                                    </div>
+                                    <div className="fv-track">
+                                        <div className={`fv-fill ${tier}`} style={{ width: `${Math.min(norm * 100, 100)}%` }} />
+                                    </div>
+                                </div>
+                            );
+                        })}
+
+                        {accessResult && accessResult.riskScore !== undefined ? (
+                            <div style={{ marginTop: '1rem', borderTop: '1px solid var(--border)', paddingTop: '1rem' }}>
+                                <RiskGauge score={accessResult.riskScore} decision={accessResult.decision || 'PERMIT'} reasons={accessResult.reasons} />
+                            </div>
+                        ) : (
+                            <div style={{ marginTop: '1.25rem', textAlign: 'center', color: 'var(--text-dim)', fontSize: '0.8rem' }}>
+                                Score will appear here after AI evaluation
+                            </div>
+                        )}
+                    </div>
+                </div>
             </div>
         );
     };
@@ -578,14 +778,18 @@ const App: React.FC = () => {
         <div className="page">
             <div className="page-header">
                 <h1 className="page-title">Security Center</h1>
-                <p className="page-subtitle">Cryptographic controls and identity protection status</p>
+                <p className="page-subtitle">Cryptographic controls and identity protection</p>
             </div>
             <div className="card" style={{ marginBottom: '1rem' }}>
                 <div className="card-title">Identity &amp; Keys</div>
                 <div className="info-list">
                     <div className="info-row">
                         <span className="info-key">Private Key Storage</span>
-                        <span className="badge badge-green">OS safeStorage</span>
+                        <span className="badge badge-green">OS safeStorage (DPAPI/Keychain)</span>
+                    </div>
+                    <div className="info-row">
+                        <span className="info-key">Key Size</span>
+                        <span className="badge badge-blue">248-bit (BN128 safe)</span>
                     </div>
                     <div className="info-row">
                         <span className="info-key">Identity Enrolled</span>
@@ -612,6 +816,10 @@ const App: React.FC = () => {
                         <span className="info-key">ZKP Engine</span>
                         <span className="badge badge-green">{status?.zkp ?? '—'}</span>
                     </div>
+                    <div className="info-row">
+                        <span className="info-key">AI HMAC Auth</span>
+                        <span className="badge badge-green">HMAC-SHA256</span>
+                    </div>
                 </div>
             </div>
         </div>
@@ -626,13 +834,7 @@ const App: React.FC = () => {
             <div className="settings-form">
                 <div className="form-field">
                     <div className="form-label">Gateway URL</div>
-                    <div className="form-value">
-                        {process.env.REACT_APP_GATEWAY_URL || 'https://localhost:8443'}
-                    </div>
-                </div>
-                <div className="form-field">
-                    <div className="form-label">Theme</div>
-                    <div className="form-value">Dark Navy</div>
+                    <div className="form-value">{process.env.REACT_APP_GATEWAY_URL || 'https://localhost:8443'}</div>
                 </div>
                 <div className="form-field">
                     <div className="form-label">Key Storage</div>
@@ -642,6 +844,10 @@ const App: React.FC = () => {
                     <div className="form-label">ZKP Circuit</div>
                     <div className="form-value">Groth16 — BN128 (snarkjs)</div>
                 </div>
+                <div className="form-field">
+                    <div className="form-label">AI Model</div>
+                    <div className="form-value">Isolation Forest (200 estimators, contamination=0.05)</div>
+                </div>
             </div>
         </div>
     );
@@ -650,7 +856,7 @@ const App: React.FC = () => {
         <div className="page">
             <div className="page-header">
                 <h1 className="page-title">About VeriChain AI</h1>
-                <p className="page-subtitle">Zero-Trust Secure Software Design project</p>
+                <p className="page-subtitle">Zero-Trust Secure Software Design — Semester 6</p>
             </div>
             <div className="card" style={{ marginBottom: '1rem' }}>
                 <div className="card-title">Version Info</div>
@@ -663,11 +869,10 @@ const App: React.FC = () => {
             <div className="card">
                 <div className="card-title">Security Stack</div>
                 <div className="info-list">
-                    <div className="info-row"><span className="info-key">Auth Model</span><span className="badge badge-green">ZKP + mTLS</span></div>
-                    <div className="info-row"><span className="info-key">ZKP Circuit</span><span className="info-value">Groth16 (BN128)</span></div>
-                    <div className="info-row"><span className="info-key">Smart Contracts</span><span className="info-value">Solidity 0.8.20 (Hardhat)</span></div>
-                    <div className="info-row"><span className="info-key">Risk Scoring</span><span className="info-value">AI — Isolation Forest</span></div>
-                    <div className="info-row"><span className="info-key">Audit Trail</span><span className="info-value">Merkle + On-Chain Anchoring</span></div>
+                    <div className="info-row"><span className="info-key">Auth</span><span className="badge badge-green">ZKP Groth16 + mTLS</span></div>
+                    <div className="info-row"><span className="info-key">Risk Engine</span><span className="info-value">Isolation Forest (6 features)</span></div>
+                    <div className="info-row"><span className="info-key">Contracts</span><span className="info-value">Solidity 0.8.20 / Hardhat</span></div>
+                    <div className="info-row"><span className="info-key">Audit</span><span className="info-value">SHA-256 Merkle + On-Chain Anchor</span></div>
                 </div>
             </div>
         </div>
@@ -691,6 +896,15 @@ const App: React.FC = () => {
 
     return (
         <div className="app-shell">
+            {/* Toast Notifications */}
+            <div className="toast-stack">
+                {toasts.map(t => (
+                    <div key={t.id} className={`toast ${t.type}`}>
+                        {t.type === 'success' ? '✓' : t.type === 'error' ? '🛑' : t.type === 'warning' ? '⚠' : 'ℹ'} {t.message}
+                    </div>
+                ))}
+            </div>
+
             {showSidebar && (
                 <nav className="sidebar">
                     <div className="sidebar-brand">
@@ -714,15 +928,15 @@ const App: React.FC = () => {
                     <div className="sidebar-nav">
                         <div className="nav-section-label">Navigation</div>
                         {NAV_ITEMS.map(({ screen, icon, label }) => {
-                            const isLocked = !sessionId && screen !== 'STATUS' && screen !== 'ABOUT' && screen !== 'SETTINGS';
+                            const locked = !sessionId && screen !== 'STATUS' && screen !== 'ABOUT' && screen !== 'SETTINGS';
                             return (
                                 <div
                                     key={screen}
-                                    className={`nav-item${currentScreen === screen ? ' active' : ''}${isLocked ? ' disabled' : ''}`}
-                                    onClick={() => !isLocked && navigate(screen)}
-                                    title={isLocked ? 'Authentication Required' : ''}
+                                    className={`nav-item${currentScreen === screen ? ' active' : ''}${locked ? ' disabled' : ''}`}
+                                    onClick={() => !locked && navigate(screen)}
+                                    title={locked ? 'Authenticate first' : ''}
                                 >
-                                    <span className="nav-icon">{isLocked ? '🔒' : icon}</span>
+                                    <span className="nav-icon">{locked ? '🔒' : icon}</span>
                                     {label}
                                 </div>
                             );
@@ -736,16 +950,25 @@ const App: React.FC = () => {
                     </div>
                 </nav>
             )}
+
             <main className="main-content">
                 {renderScreen()}
 
-                {/* Step-Up Modal */}
                 {accessResult?.decision === 'STEP_UP' && (
                     <div className="modal-overlay">
                         <div className="modal-card">
                             <div className="modal-icon warning">⚠</div>
                             <h2 className="modal-title">Step-Up Required</h2>
-                            <p className="modal-text">AI Risk Engine detected elevated risk. Re-authenticate to continue.</p>
+                            {accessResult.riskScore !== undefined && (
+                                <div style={{ marginBottom: '0.75rem' }}>
+                                    <RiskGauge score={accessResult.riskScore} decision="STEP_UP" reasons={accessResult.reasons} />
+                                </div>
+                            )}
+                            <p className="modal-text">
+                                {accessResult.reasonSummary
+                                    ? <>The AI Risk Engine flagged <strong>{accessResult.reasons?.[0]?.label || 'behavioural anomaly'}</strong>. Re-authenticate to continue.</>
+                                    : 'The AI Risk Engine detected elevated behavioural anomaly. Re-authenticate to continue.'}
+                            </p>
                             <button className="btn btn-warning btn-full" onClick={() => { setAccessResult(null); navigate('AUTHENTICATION'); }}>
                                 Re-Authenticate
                             </button>
@@ -753,16 +976,21 @@ const App: React.FC = () => {
                     </div>
                 )}
 
-                {/* Revocation Modal */}
                 {accessResult?.decision === 'REVOKE' && (
                     <div className="modal-overlay">
                         <div className="modal-card">
                             <div className="modal-icon danger">🛑</div>
                             <h2 className="modal-title">Session Revoked</h2>
-                            <p className="modal-text">Critical anomaly detected. Access has been terminated.</p>
-                            <button className="btn btn-danger btn-full" onClick={logout}>
-                                OK
-                            </button>
+                            {accessResult.riskScore !== undefined && (
+                                <div style={{ marginBottom: '0.75rem' }}>
+                                    <RiskGauge score={accessResult.riskScore} decision="REVOKE" reasons={accessResult.reasons} />
+                                </div>
+                            )}
+                            <p className="modal-text">
+                                Critical anomaly detected by Isolation Forest{accessResult.reasons?.[0]?.label ? <> — primary cause: <strong>{accessResult.reasons[0].label}</strong></> : ''}.
+                                Session has been revoked on-chain.
+                            </p>
+                            <button className="btn btn-danger btn-full" onClick={logout}>OK</button>
                         </div>
                     </div>
                 )}

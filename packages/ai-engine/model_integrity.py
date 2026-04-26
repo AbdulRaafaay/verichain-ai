@@ -41,9 +41,15 @@ def verify_model_integrity():
     
     Maps to NFR-09: "AI Engine refuses to start if hash does not match"
     """
-    # Check model file exists
+    # First-boot path: no model on disk → RiskEngine() will auto-train and persist one.
+    # The newly-trained model's hash should be registered on-chain in a follow-up
+    # admin step. We only enforce the equality check when both sides exist.
     if not os.path.exists(MODEL_PATH):
-        raise RuntimeError(f"FATAL: Model file {MODEL_PATH} not found. Integrity cannot be verified.")
+        logger.warning(
+            "Model file not found — assumed first boot. RiskEngine will auto-train a "
+            "fresh baseline. Remember to register its hash on-chain via the admin script."
+        )
+        return
 
     # Compute current model hash
     with open(MODEL_PATH, 'rb') as f:
@@ -87,7 +93,12 @@ def verify_model_integrity():
 
             # Zero bytes32 means hash was never registered (initial deployment)
             if on_chain_hash == '0' * 64:
-                logger.warning("No model hash registered on-chain yet — skipping integrity check")
+                logger.warning(
+                    "No model hash registered on-chain yet — skipping integrity check. "
+                    "IMPORTANT: Register the hash exactly once at deployment time via the "
+                    "admin script. The contract must enforce write-once semantics so the "
+                    "registered hash cannot be overwritten after initial registration."
+                )
                 return
 
             # CRITICAL COMPARISON (NFR-09)

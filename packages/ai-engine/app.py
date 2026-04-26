@@ -56,8 +56,17 @@ def verify_hmac(request_body: bytes, provided_hmac: str) -> bool:
 
 @app.route('/health', methods=['GET'])
 def health():
-    """Health check endpoint — used by Docker Compose healthcheck."""
-    return jsonify({'status': 'healthy', 'model': 'loaded'}), 200
+    """
+    Health check + model validation metrics.
+    Used by Docker Compose healthcheck and by the Trust Dashboard's status page.
+    """
+    return jsonify({
+        'status':            'healthy',
+        'model':             'loaded',
+        'validation':        engine.validation_metrics,
+        'featureMeans':      engine.feature_means.tolist(),
+        'featureStds':       engine.feature_stds.tolist(),
+    }), 200
 
 
 @app.route('/score', methods=['POST'])
@@ -103,7 +112,7 @@ def score():
 
     # Step 3: Score the session (only numeric/hashed features — no PII)
     try:
-        risk_score = engine.score({
+        result = engine.score_with_reasons({
             'accessVelocity': float(data['accessVelocity']),
             'uniqueResources': int(data['uniqueResources']),
             'downloadBytes': int(data['downloadBytes']),
@@ -111,11 +120,15 @@ def score():
             'timeSinceLast': float(data.get('timeSinceLast', 0)),
             'deviceIdMatch': int(data.get('deviceIdMatch', 1))
         })
-        logger.info(f"Session scored: hash={data['sessionHash'][:8]}... score={risk_score}")
-        return jsonify({'riskScore': risk_score}), 200
+        reason_summary = ', '.join([f"{r['feature']}(z={r['zScore']})" for r in result['reasons']]) or 'none'
+        logger.info(
+            f"Scored: hash={data['sessionHash'][:8]}... "
+            f"score={result['riskScore']} reasons=[{reason_summary}]"
+        )
+        return jsonify(result), 200
     except Exception as e:
         logger.error(f"Scoring error: {str(e)} — returning fail-closed score 100")
-        return jsonify({'riskScore': 100}), 200
+        return jsonify({'riskScore': 100, 'reasons': [{'feature': 'engine_error', 'label': 'AI engine error'}], 'rawDecision': 0}), 200
 
 
 if __name__ == '__main__':

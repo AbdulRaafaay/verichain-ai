@@ -1,18 +1,28 @@
-import React, { useEffect, useState } from 'react';
-import axios from 'axios';
+/**
+ * Sessions.tsx — Real-time session monitor.
+ *
+ * Displays all authenticated sessions, their live AI risk scores, and last
+ * heartbeat timestamps. Receives instant updates via Socket.io (session_update /
+ * session_revoked) and falls back to 5-second HTTP polling when the socket is
+ * not yet connected.
+ *
+ * Security: all admin API calls are authenticated via the X-Admin-Key header
+ * attached by the shared `api` axios instance (src/api.ts).
+ */
+
+import React, { useEffect, useRef, useState } from 'react';
 import { io } from 'socket.io-client';
+import api, { GATEWAY_URL, ADMIN_KEY } from '../api';
 import DetailModal from '../components/DetailModal';
 
 interface Session {
     id: string;
     userHash: string;
-    currentResource: string;
     loginTime: string;
     lastHeartbeat: string;
     duration: string;
     riskScore: number;
     status: 'ACTIVE' | 'REVOKED';
-    metadata?: any;
 }
 
 const Sessions: React.FC = () => {
@@ -20,55 +30,50 @@ const Sessions: React.FC = () => {
     const [loading, setLoading]   = useState(true);
     const [revoking, setRevoking] = useState<string | null>(null);
     const [selected, setSelected] = useState<Session | null>(null);
-    const gatewayUrl = process.env.REACT_APP_GATEWAY_URL || 'https://localhost:8443';
+
+    const latestSessions = useRef<Session[]>([]);
+    latestSessions.current = sessions;
 
     useEffect(() => {
-        const socket = io(gatewayUrl, { withCredentials: true } as any);
+        const socket = io(GATEWAY_URL, { withCredentials: true, auth: { token: ADMIN_KEY } } as any);
 
         const fetchSessions = async () => {
             try {
-                const res = await axios.get(`${gatewayUrl}/api/admin/overview`, { withCredentials: true });
+                const res = await api.get('/api/admin/overview');
                 setSessions(res.data.sessions || []);
-            } catch (err) {
-                console.error('Failed to fetch sessions', err);
-            } finally {
-                setLoading(false);
-            }
+            } catch { /* gateway not ready */ }
+            finally { setLoading(false); }
         };
 
         fetchSessions();
 
-        // Real-time: socket events from gateway
         socket.on('session_update', (updated: Session[]) => {
             setSessions(updated);
             setLoading(false);
         });
         socket.on('session_revoked', ({ sessionId }: { sessionId: string }) =>
-            setSessions(prev => prev.map(s => (s.id === sessionId ? { ...s, status: 'REVOKED' } : s)))
+            setSessions(prev => prev.map(s => s.id === sessionId ? { ...s, status: 'REVOKED' } : s))
         );
 
         const poll = setInterval(fetchSessions, 5000);
         const tick = setInterval(() => setSessions(s => [...s]), 1000);
 
         return () => { socket.disconnect(); clearInterval(poll); clearInterval(tick); };
-    }, [gatewayUrl]);
+    }, []);
 
     const revokeSession = async (e: React.MouseEvent, id: string) => {
         e.stopPropagation();
         setRevoking(id);
         try {
-            await axios.post(`${gatewayUrl}/api/admin/revoke`, { sessionId: id }, { withCredentials: true });
-        } catch (err) {
-            console.error('Failed to revoke session', err);
-        } finally {
-            setRevoking(null);
-        }
+            await api.post('/api/admin/revoke', { sessionId: id });
+        } catch { /* noop */ }
+        finally { setRevoking(null); }
     };
 
     const riskBadge = (score: number) => {
-        if (score > 75) return <span className="badge badge-red">{Math.round(score)}</span>;
-        if (score > 50) return <span className="badge badge-yellow">{Math.round(score)}</span>;
-        return <span className="badge badge-green">{Math.round(score)}</span>;
+        if (score > 75) return <span className="badge badge-red">{score}</span>;
+        if (score > 50) return <span className="badge badge-yellow">{score}</span>;
+        return <span className="badge badge-green">{score}</span>;
     };
 
     const active  = sessions.filter(s => s.status === 'ACTIVE').length;
@@ -78,19 +83,34 @@ const Sessions: React.FC = () => {
         <div className="page sessions">
             <div className="page-header">
                 <div>
-                    <h1 className="page-title">Active Sessions</h1>
-                    <p className="page-sub">All authenticated sessions and their real-time risk posture</p>
+                    <h1 className="page-title"><span>◎</span> Active Sessions</h1>
+                    <p className="page-sub">Live ZKP-authenticated sessions with continuous risk scoring</p>
                 </div>
-                <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center' }}>
+                <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
                     <span className="badge badge-green">● {active} Active</span>
                     {revoked > 0 && <span className="badge badge-gray">{revoked} Revoked</span>}
                 </div>
             </div>
 
             {loading ? (
-                <div className="loading-state">
-                    <div className="spinner" />
-                    <span>Loading sessions…</span>
+                <div className="table-wrap">
+                    <table>
+                        <thead><tr><th>Session ID</th><th>User Hash</th><th>Login Time</th><th>Duration</th><th>Last Heartbeat</th><th>Risk Score</th><th>Status</th><th>Actions</th></tr></thead>
+                        <tbody>
+                            {Array.from({ length: 4 }).map((_, i) => (
+                                <tr key={i} className="skeleton-row">
+                                    <td><div className="skeleton-cell" style={{ width: '7rem' }} /></td>
+                                    <td><div className="skeleton-cell" style={{ width: '9rem' }} /></td>
+                                    <td><div className="skeleton-cell" style={{ width: '5rem' }} /></td>
+                                    <td><div className="skeleton-cell" style={{ width: '4rem' }} /></td>
+                                    <td><div className="skeleton-cell" style={{ width: '4rem' }} /></td>
+                                    <td><div className="skeleton-cell" style={{ width: '3rem' }} /></td>
+                                    <td><div className="skeleton-cell" style={{ width: '4.5rem' }} /></td>
+                                    <td><div className="skeleton-cell" style={{ width: '4rem' }} /></td>
+                                </tr>
+                            ))}
+                        </tbody>
+                    </table>
                 </div>
             ) : sessions.length === 0 ? (
                 <div className="empty-state">
@@ -104,7 +124,6 @@ const Sessions: React.FC = () => {
                             <tr>
                                 <th>Session ID</th>
                                 <th>User Hash</th>
-                                <th>Current Resource</th>
                                 <th>Login Time</th>
                                 <th>Duration</th>
                                 <th>Last Heartbeat</th>
@@ -121,10 +140,9 @@ const Sessions: React.FC = () => {
                                     : null;
                                 const hbColor = hbAge !== null && hbAge < 35 ? 'var(--success)' : 'var(--warning)';
                                 return (
-                                    <tr key={sid} onClick={() => setSelected(s)} style={{ cursor: 'pointer' }}>
-                                        <td><span className="mono" title={sid}>{sid.substring(0, 8)}…</span></td>
-                                        <td><span className="mono" title={s.userHash}>{(s.userHash || '').substring(0, 10)}…</span></td>
-                                        <td><code style={{ fontSize: '0.75rem' }}>{s.currentResource || 'None'}</code></td>
+                                    <tr key={sid} style={{ cursor: 'pointer' }} onClick={() => setSelected(s)}>
+                                        <td><span className="mono" title={sid}>{sid.substring(0, 10)}…</span></td>
+                                        <td><span className="mono" title={s.userHash}>{(s.userHash || '').substring(0, 16)}…</span></td>
                                         <td style={{ color: 'var(--text-muted)', fontSize: '0.82rem' }}>
                                             {s.loginTime ? new Date(s.loginTime).toLocaleTimeString() : '—'}
                                         </td>
@@ -134,6 +152,12 @@ const Sessions: React.FC = () => {
                                         </td>
                                         <td>
                                             {riskBadge(s.riskScore ?? 0)}
+                                            <div className="risk-bar-wrap" style={{ width: 60 }}>
+                                                <div className="risk-bar" style={{
+                                                    width: `${s.riskScore ?? 0}%`,
+                                                    background: (s.riskScore ?? 0) > 75 ? 'var(--danger)' : (s.riskScore ?? 0) > 50 ? 'var(--warning)' : 'var(--success)',
+                                                }} />
+                                            </div>
                                         </td>
                                         <td>
                                             <span className={`badge ${s.status === 'ACTIVE' ? 'badge-green' : 'badge-gray'}`}>
@@ -141,19 +165,16 @@ const Sessions: React.FC = () => {
                                             </span>
                                         </td>
                                         <td>
-                                            <div style={{ display: 'flex', gap: '0.5rem' }}>
-                                                <button className="btn-ghost" style={{ fontSize: '0.75rem' }}>Inspect</button>
-                                                {s.status === 'ACTIVE' && (
-                                                    <button
-                                                        className="btn-danger"
-                                                        disabled={revoking === sid}
-                                                        onClick={(e) => revokeSession(e, sid)}
-                                                        style={{ fontSize: '0.78rem', padding: '0.3rem 0.7rem' }}
-                                                    >
-                                                        {revoking === sid ? '…' : 'Revoke'}
-                                                    </button>
-                                                )}
-                                            </div>
+                                            {s.status === 'ACTIVE' && (
+                                                <button
+                                                    className="btn-danger"
+                                                    disabled={revoking === sid}
+                                                    onClick={e => revokeSession(e, sid)}
+                                                    style={{ fontSize: '0.78rem', padding: '0.3rem 0.7rem' }}
+                                                >
+                                                    {revoking === sid ? '…' : 'Revoke'}
+                                                </button>
+                                            )}
                                         </td>
                                     </tr>
                                 );
@@ -163,23 +184,32 @@ const Sessions: React.FC = () => {
                 </div>
             )}
 
-            {selected && (
-                <DetailModal
-                    isOpen={!!selected}
-                    onClose={() => setSelected(null)}
-                    title="Session Details"
-                    data={{
-                        'Session ID': selected.id,
-                        'User Hash': selected.userHash,
-                        'Current Resource': selected.currentResource,
-                        'Login Time': selected.loginTime,
-                        'Duration': selected.duration,
-                        'Risk Score': selected.riskScore,
-                        'Status': selected.status,
-                        ...selected.metadata
-                    }}
-                />
-            )}
+            {selected && (() => {
+                const sid = (selected as any).id || (selected as any).sessionId || '';
+                const meta = (selected as any).metadata || {};
+                return (
+                    <DetailModal
+                        isOpen={!!selected}
+                        onClose={() => setSelected(null)}
+                        title="Session Details"
+                        data={{
+                            'Session ID':       sid,
+                            'User Hash':        selected.userHash || '—',
+                            'Status':           selected.status,
+                            'Risk Score':       selected.riskScore ?? 0,
+                            'Login Time':       selected.loginTime ? new Date(selected.loginTime).toLocaleString() : '—',
+                            'Last Heartbeat':   selected.lastHeartbeat ? new Date(selected.lastHeartbeat).toLocaleString() : '—',
+                            'Duration':         selected.duration || '—',
+                            'Current Resource': meta.currentResource || (selected as any).currentResource || '—',
+                            'Device ID':        meta.deviceId || '—',
+                            'IP Address':       meta.ipAddress || meta.ip || '—',
+                            'Geo Distance (km)': meta.geoDistanceKm ?? '—',
+                            'Access Velocity':  meta.accessVelocity ?? '—',
+                            'Download Bytes':   meta.downloadBytes ?? '—',
+                        }}
+                    />
+                );
+            })()}
         </div>
     );
 };

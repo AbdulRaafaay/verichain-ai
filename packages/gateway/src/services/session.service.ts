@@ -1,4 +1,4 @@
-import redisClient from './redisClient';
+import redisClient, { sessionEvents } from './redisClient';
 import { logger } from '../utils/logger';
 import { BlockchainService } from './blockchain.service';
 import { AuditService } from './audit.service';
@@ -10,6 +10,34 @@ import { AuditService } from './audit.service';
 export class SessionService {
     private static SESSION_TTL = 3600; // 1 hour
     private static HEARTBEAT_TIMEOUT = 35; // Seconds
+
+    /**
+     * Subscribe to Redis TTL-expiry events so sessions that simply time out (no
+     * explicit revocation call) are also revoked on-chain.  This closes the
+     * Redis↔Blockchain desync window: previously an expired key left the on-chain
+     * session in a stale "active" state until the watchdog next ran.
+     */
+    private static sessionToBytes32(sessionId: string): string {
+        return '0x' + sessionId.replace(/-/g, '').padEnd(64, '0');
+    }
+
+    static listenForExpiredSessions() {
+        sessionEvents.on('session:expired', async (sessionId: string) => {
+            try {
+                await AuditService.log('SESSION_EXPIRED', { sessionId, reason: 'Redis TTL' });
+                await BlockchainService.sendTx(async () => {
+                    const tx = await BlockchainService.accessPolicy.revokeSession(
+                        SessionService.sessionToBytes32(sessionId),
+                        'Redis TTL Expired'
+                    );
+                    return tx.wait();
+                });
+                logger.info(`On-chain revoke for TTL-expired session: ${sessionId}`);
+            } catch (err) {
+                logger.error('Failed to revoke TTL-expired session on-chain', { error: (err as Error).message });
+            }
+        });
+    }
 
     static startHeartbeatWatchdog() {
         setInterval(async () => {
@@ -26,16 +54,16 @@ export class SessionService {
                         await this.revokeSession(session.sessionId, 'Heartbeat Timeout');
                         await AuditService.log('SESSION_TIMEOUT', { sessionId: session.sessionId, lastHeartbeat: session.lastHeartbeat });
                         
-                        // Blockchain revocation (NFR-06)
-                        try {
+                        // Blockchain revocation (NFR-06) — serialised via sendTx to avoid nonce collisions
+                        await BlockchainService.sendTx(async () => {
                             const tx = await BlockchainService.accessPolicy.revokeSession(
-                                `0x${session.sessionId.replace(/-/g, '')}`, 
+                                SessionService.sessionToBytes32(session.sessionId),
                                 'Heartbeat Timeout'
                             );
-                            await tx.wait();
-                        } catch (bcErr) {
-                            logger.error('Failed to revoke session on-chain', { error: (bcErr as Error).message });
-                        }
+                            return tx.wait();
+                        }).catch((bcErr: Error) => {
+                            logger.error('Failed to revoke session on-chain', { error: bcErr.message });
+                        });
                     }
                 }
             } catch (err) {

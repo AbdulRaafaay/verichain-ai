@@ -40,9 +40,11 @@ packages/ai-engine/__pycache__/
 packages/ai-engine/.venv/
 packages/ai-engine/venv/
 packages/ai-engine/env/
-packages/ai-engine/model/model.pkl
 *.pyc
 .ipynb_checkpoints
+# Note: packages/ai-engine/model.pkl IS tracked (the trained Isolation Forest baseline,
+# ~1 MB, included so cloners get a working demo immediately). The engine auto-retrains
+# if the file is ever missing.
 
 # Desktop Agent
 packages/desktop-agent/dist/
@@ -52,6 +54,7 @@ packages/desktop-agent/identity.enc
 # IDE & OS
 .vscode/
 .idea/
+.claude/
 .DS_Store
 Thumbs.db
 
@@ -63,3 +66,5 @@ prompt.md
 **/dist/
 **/build/
 **/out/
+
+CLAUDE.mD
