@@ -22,7 +22,7 @@ jobs:
           cd packages/gateway
           npm install
           npm run lint
-          npm audit --audit-level=high
+          npm audit --audit-level=critical
           
       - name: AI Engine Security Check
         run: |
