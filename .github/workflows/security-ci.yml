@@ -31,6 +31,12 @@ jobs:
           flake8 .
           bandit -r .
           
+      - name: Compile Smart Contracts
+        run: |
+          cd packages/contracts
+          npm install
+          npx hardhat compile
+
       - name: Smart Contract Security (Slither)
         uses: crytic/slither-action@v0.3.0
         with:
