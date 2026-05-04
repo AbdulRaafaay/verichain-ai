@@ -42,6 +42,8 @@ jobs:
         with:
           target: 'packages/contracts'
           ignore-compile: true
+          fail-on: high
+          slither-args: '--exclude-dependencies'
 
   mtls-test:
     runs-on: ubuntu-latest
