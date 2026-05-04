@@ -80,9 +80,9 @@ class RiskEngine:
                 logger.info(f"Model loaded from {MODEL_PATH} (df_min={self.df_min:.4f}, df_max={self.df_max:.4f})")
                 if self.validation_metrics:
                     logger.info(
-                        f"Validation: recall@50={self.validation_metrics.get('recall_at_50','?')}  "
-                        f"recall@75={self.validation_metrics.get('recall_at_75','?')}  "
-                        f"FP@50={self.validation_metrics.get('false_positive_50','?')}"
+                        f"Validation: recall@50={self.validation_metrics.get('recall_at_50', '?')}  "
+                        f"recall@75={self.validation_metrics.get('recall_at_75', '?')}  "
+                        f"FP@50={self.validation_metrics.get('false_positive_50', '?')}"
                     )
             except Exception as e:
                 logger.error(f"Failed to load model: {e} — re-training baseline")
@@ -179,7 +179,7 @@ class RiskEngine:
             np.random.normal(500_000, 3_000_000, n_samples),                  # downloadBytes (~500 KB)
             np.random.normal(10, 50, n_samples),                              # geoDistanceKm
             np.random.normal(300, 100, n_samples),                            # timeSinceLast
-            np.random.choice([0, 1], n_samples, p=[0.05, 0.95]).astype(float),# deviceIdMatch (5% mismatch)
+            np.random.choice([0, 1], n_samples, p=[0.05, 0.95]).astype(float),  # deviceIdMatch (5% mismatch)
         ])
         normal_data[:, 0] = np.clip(normal_data[:, 0], 0, None)
         normal_data[:, 1] = np.clip(normal_data[:, 1], 1, None).round()
@@ -229,7 +229,7 @@ class RiskEngine:
         # Per-pattern recall — useful for the report
         per_pattern_recall = {}
         for pattern in sorted(set(attack_labels)):
-            mask = np.array([l == pattern for l in attack_labels])
+            mask = np.array([lbl == pattern for lbl in attack_labels])
             per_pattern_recall[pattern] = float((attack_scores[mask] >= 50).mean())
 
         validation_metrics = {

@@ -133,4 +133,4 @@ def score():
 
 if __name__ == '__main__':
     # Internal network only — bind to 0.0.0.0 within Docker but isolated by network policy
-    app.run(host='0.0.0.0', port=5001, debug=False)
+    app.run(host='0.0.0.0', port=5001, debug=False)  # nosec B104
