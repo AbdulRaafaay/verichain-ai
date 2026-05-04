@@ -1,0 +1,9 @@
+[flake8]
+max-line-length = 120
+extend-ignore =
+    E221,
+    E222,
+    E261,
+    W291,
+    W293,
+    F541
